@@ -107,43 +107,43 @@ func New() *Mega {
 func (m *Mega) api_request(r []byte) ([]byte, error) {
 	var err error
 	var resp *http.Response
+	var buf []byte
 	url := fmt.Sprintf("%s?id=%d", API_URL, m.sn)
 
 	if m.sid != nil {
 		url = fmt.Sprintf("%s&sid=%s", url, string(m.sid))
 	}
 
-retry:
 	for i := 0; i < RETRIES; i++ {
 		resp, err = http.Post(url, "application/json", bytes.NewBuffer(r))
 		if err == nil {
 			if resp.StatusCode == 200 {
-				err = nil
-				break
+				goto success
 			}
 			err = errors.New("Http Status:" + resp.Status)
-		}
-	}
-
-	if err != nil {
-		return nil, err
-	}
-
-	buf, _ := ioutil.ReadAll(resp.Body)
-
-	if len(buf) < 6 {
-		var emsg [1]ErrorMsg
-		err := json.Unmarshal(buf, &emsg)
-		if err != nil {
-			json.Unmarshal(buf, &emsg[0])
-		}
-		err = parseError(emsg[0])
-		if err == EAGAIN {
-			goto retry
 		}
 
 		if err != nil {
 			return nil, err
+		}
+
+	success:
+		buf, _ = ioutil.ReadAll(resp.Body)
+
+		if len(buf) < 6 {
+			var emsg [1]ErrorMsg
+			err := json.Unmarshal(buf, &emsg)
+			if err != nil {
+				json.Unmarshal(buf, &emsg[0])
+			}
+			err = parseError(emsg[0])
+			if err == EAGAIN {
+				continue
+			}
+
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 
