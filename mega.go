@@ -20,9 +20,10 @@ import (
 )
 
 const (
-	API_URL = "https://eu.api.mega.co.nz/cs"
-	RETRIES = 5
-	WORKERS = 3
+	API_URL          = "https://eu.api.mega.co.nz/cs"
+	RETRIES          = 5
+	DOWNLOAD_WORKERS = 6
+	UPLOAD_WORKERS   = 6
 )
 
 type Mega struct {
@@ -388,7 +389,7 @@ func (m Mega) DownloadFile(src *Node, dstpath string) error {
 	wg := sync.WaitGroup{}
 
 	// Fire chunk download workers
-	for w := 0; w < WORKERS; w++ {
+	for w := 0; w < DOWNLOAD_WORKERS; w++ {
 		go func() {
 			var id int
 			var live bool
@@ -471,6 +472,7 @@ func (m Mega) UploadFile(srcpath string, parent *Node) (*Node, error) {
 	var cres [1]UploadCompleteResp
 	var infile *os.File
 	var fileSize int64
+	var mutex sync.Mutex
 
 	parenthash := parent.hash
 	info, err := os.Stat(srcpath)
@@ -519,43 +521,75 @@ func (m Mega) UploadFile(srcpath string, parent *Node) (*Node, error) {
 		sorted_chunks = append(sorted_chunks, k)
 	}
 	sort.Ints(sorted_chunks)
+	workch := make(chan int)
+	wg := sync.WaitGroup{}
 
-	for id := 0; id < len(chunks); id++ {
-		chk_start := sorted_chunks[id]
-		chk_size := chunks[chk_start]
-		ctr_iv := bytes_to_a32(kiv)
-		ctr_iv[2] = uint32(uint64(chk_start) / 0x1000000000)
-		ctr_iv[3] = uint32(chk_start / 0x10)
-		ctr_aes := cipher.NewCTR(aes_block, a32_to_bytes(ctr_iv))
+	for w := 0; w < UPLOAD_WORKERS; w++ {
+		go func() {
+			var id int
+			var live bool
+			for {
+				select {
+				case id, live = <-workch:
+					if !live {
+						return
+					}
+				}
 
-		chunk := make([]byte, chk_size)
-		n, _ := infile.ReadAt(chunk, int64(chk_start))
-		chunk = chunk[:n]
+				mutex.Lock()
+				chk_start := sorted_chunks[id]
+				chk_size := chunks[chk_start]
+				mutex.Unlock()
+				ctr_iv := bytes_to_a32(kiv)
+				ctr_iv[2] = uint32(uint64(chk_start) / 0x1000000000)
+				ctr_iv[3] = uint32(chk_start / 0x10)
+				ctr_aes := cipher.NewCTR(aes_block, a32_to_bytes(ctr_iv))
 
-		enc := cipher.NewCBCEncrypter(aes_block, iv)
+				chunk := make([]byte, chk_size)
+				n, _ := infile.ReadAt(chunk, int64(chk_start))
+				chunk = chunk[:n]
 
-		i := 0
-		block := make([]byte, 16)
-		paddedchunk := paddnull(chunk, 16)
-		for i = 0; i < len(paddedchunk); i += 16 {
-			copy(block[0:16], paddedchunk[i:i+16])
-			enc.CryptBlocks(block, block)
-		}
+				enc := cipher.NewCBCEncrypter(aes_block, iv)
 
-		chunk_macs[id] = make([]byte, 16)
-		copy(chunk_macs[id], block)
-		ctr_aes.XORKeyStream(chunk, chunk)
+				i := 0
+				block := make([]byte, 16)
+				paddedchunk := paddnull(chunk, 16)
+				for i = 0; i < len(paddedchunk); i += 16 {
+					copy(block[0:16], paddedchunk[i:i+16])
+					enc.CryptBlocks(block, block)
+				}
 
-		chk_url := fmt.Sprintf("%s/%d", uploadUrl, chk_start)
-		reader := bytes.NewBuffer(chunk)
-		req, _ := http.NewRequest("POST", chk_url, reader)
-		rsp, _ := client.Do(req)
-		chunk_resp, _ := ioutil.ReadAll(rsp.Body)
-		if bytes.Equal(chunk_resp, nil) == false {
-			completion_handle = chunk_resp
+				mutex.Lock()
+				chunk_macs[id] = make([]byte, 16)
+				copy(chunk_macs[id], block)
+				mutex.Unlock()
 
-		}
+				ctr_aes.XORKeyStream(chunk, chunk)
+
+				chk_url := fmt.Sprintf("%s/%d", uploadUrl, chk_start)
+				reader := bytes.NewBuffer(chunk)
+				req, _ := http.NewRequest("POST", chk_url, reader)
+				rsp, _ := client.Do(req)
+				chunk_resp, _ := ioutil.ReadAll(rsp.Body)
+				if bytes.Equal(chunk_resp, nil) == false {
+					mutex.Lock()
+					completion_handle = chunk_resp
+					mutex.Unlock()
+
+				}
+				wg.Done()
+			}
+		}()
 	}
+
+	// Place chunk upload jobs to chan
+	for id := 0; id < len(chunks); id++ {
+		wg.Add(1)
+		workch <- id
+	}
+
+	wg.Wait()
+	close(workch)
 
 	for _, v := range chunk_macs {
 		mac_enc.CryptBlocks(mac_data, v)
