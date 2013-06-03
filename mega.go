@@ -16,11 +16,13 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 )
 
 const (
 	API_URL = "https://eu.api.mega.co.nz/cs"
 	RETRIES = 5
+	WORKERS = 3
 )
 
 type Mega struct {
@@ -339,6 +341,7 @@ func (m Mega) DownloadFile(src *Node, dstpath string) error {
 	var msg [1]DownloadMsg
 	var res [1]DownloadResp
 	var outfile *os.File
+	var mutex sync.Mutex
 
 	_, err := os.Stat(dstpath)
 	if os.IsExist(err) {
@@ -381,38 +384,71 @@ func (m Mega) DownloadFile(src *Node, dstpath string) error {
 	}
 	sort.Ints(sorted_chunks)
 
-	for id := 0; id < len(chunks); id++ {
-		var resource *http.Response
-		chk_start := sorted_chunks[id]
-		chk_size := chunks[chk_start]
-		chunk_url := fmt.Sprintf("%s/%d-%d", resourceUrl, chk_start, chk_start+chk_size-1)
-		for retry := 0; retry < RETRIES; retry++ {
-			resource, err = http.Get(chunk_url)
-			if err == nil {
-				break
+	workch := make(chan int)
+	wg := sync.WaitGroup{}
+
+	// Fire chunk download workers
+	for w := 0; w < WORKERS; w++ {
+		go func() {
+			var id int
+			var live bool
+			for {
+				// Wait for work blocked on channel
+				select {
+				case id, live = <-workch:
+					if !live {
+						return
+					}
+				}
+
+				var resource *http.Response
+				mutex.Lock()
+				chk_start := sorted_chunks[id]
+				chk_size := chunks[chk_start]
+				mutex.Unlock()
+				chunk_url := fmt.Sprintf("%s/%d-%d", resourceUrl, chk_start, chk_start+chk_size-1)
+				for retry := 0; retry < RETRIES; retry++ {
+					resource, err = http.Get(chunk_url)
+					if err == nil {
+						break
+					}
+				}
+
+				ctr_iv := bytes_to_a32(src.meta.iv)
+				ctr_iv[2] = uint32(uint64(chk_start) / 0x1000000000)
+				ctr_iv[3] = uint32(chk_start / 0x10)
+				ctr_aes := cipher.NewCTR(aes_block, a32_to_bytes(ctr_iv))
+				chunk, _ := ioutil.ReadAll(resource.Body)
+				ctr_aes.XORKeyStream(chunk, chunk)
+				outfile.WriteAt(chunk, int64(chk_start))
+
+				enc := cipher.NewCBCEncrypter(aes_block, iv)
+				i := 0
+				block := []byte{}
+				chunk = paddnull(chunk, 16)
+				for i = 0; i < len(chunk); i += 16 {
+					block = chunk[i : i+16]
+					enc.CryptBlocks(block, block)
+				}
+
+				mutex.Lock()
+				chunk_macs[id] = make([]byte, 16)
+				copy(chunk_macs[id], block)
+				mutex.Unlock()
+				wg.Done()
 			}
-		}
-
-		ctr_iv := bytes_to_a32(src.meta.iv)
-		ctr_iv[2] = uint32(uint64(chk_start) / 0x1000000000)
-		ctr_iv[3] = uint32(chk_start / 0x10)
-		ctr_aes := cipher.NewCTR(aes_block, a32_to_bytes(ctr_iv))
-		chunk, _ := ioutil.ReadAll(resource.Body)
-		ctr_aes.XORKeyStream(chunk, chunk)
-		outfile.WriteAt(chunk, int64(chk_start))
-
-		enc := cipher.NewCBCEncrypter(aes_block, iv)
-		i := 0
-		block := []byte{}
-		chunk = paddnull(chunk, 16)
-		for i = 0; i < len(chunk); i += 16 {
-			block = chunk[i : i+16]
-			enc.CryptBlocks(block, block)
-		}
-
-		chunk_macs[id] = make([]byte, 16)
-		copy(chunk_macs[id], block)
+		}()
 	}
+
+	// Place works to the channel
+	for id := 0; id < len(chunks); id++ {
+		wg.Add(1)
+		workch <- id
+	}
+
+	// Wait for chunk downloads to complete
+	wg.Wait()
+	close(workch)
 
 	for _, v := range chunk_macs {
 		mac_enc.CryptBlocks(mac_data, v)
