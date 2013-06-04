@@ -10,8 +10,26 @@ import (
 	"encoding/json"
 	"errors"
 	"math/big"
+	"net"
+	"net/http"
 	"strings"
+	"time"
 )
+
+func newHttpClient(timeout time.Duration) *http.Client {
+	c := &http.Client{
+		Transport: &http.Transport{
+			Dial: func(netw, addr string) (net.Conn, error) {
+				c, err := net.DialTimeout(netw, addr, timeout)
+				if err != nil {
+					return nil, err
+				}
+				return c, nil
+			},
+		},
+	}
+	return c
+}
 
 func bytes_to_a32(b []byte) []uint32 {
 	length := len(b) + 3

@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Default settings
@@ -27,6 +28,7 @@ const (
 	MAX_DOWNLOAD_WORKERS = 6
 	UPLOAD_WORKERS       = 3
 	MAX_UPLOAD_WORKERS   = 6
+	TIMEOUT              = time.Second * 3
 )
 
 type config struct {
@@ -34,10 +36,17 @@ type config struct {
 	retries    int
 	dl_workers int
 	ul_workers int
+	timeout    time.Duration
 }
 
 func newConfig() config {
-	return config{API_URL, RETRIES, DOWNLOAD_WORKERS, UPLOAD_WORKERS}
+	return config{
+		baseurl:    API_URL,
+		retries:    RETRIES,
+		dl_workers: DOWNLOAD_WORKERS,
+		ul_workers: UPLOAD_WORKERS,
+		timeout:    TIMEOUT,
+	}
 }
 
 // Set mega service base url
@@ -58,6 +67,11 @@ func (c *config) SetDownloadWorkers(w int) error {
 	}
 
 	return EWORKER_LIMIT_EXCEEDED
+}
+
+// Set connection timeout
+func (c *config) SetTimeOut(t time.Duration) {
+	c.timeout = t
 }
 
 // Set concurrent upload workers
@@ -81,7 +95,7 @@ type Mega struct {
 	// User handle
 	uh []byte
 	// Filesystem object
-	fs MegaFS
+	fs *MegaFS
 }
 
 // Filesystem node types
@@ -142,11 +156,25 @@ type MegaFS struct {
 	skmap  map[string]string
 }
 
+func newMegaFS() *MegaFS {
+	fs := &MegaFS{
+		lookup: make(map[string]*Node),
+		skmap:  make(map[string]string),
+	}
+	return fs
+}
+
 func New() *Mega {
 	max := big.NewInt(0x100000000)
 	bigx, _ := rand.Int(rand.Reader, max)
 	cfg := newConfig()
-	m := &Mega{cfg, bigx.Int64(), nil, nil, nil, MegaFS{nil, nil, nil, []*Node{}, map[string]*Node{}, map[string]string{}}}
+	//m := &Mega{cfg, bigx.Int64(), nil, nil, nil, MegaFS{nil, nil, nil, []*Node{}, map[string]*Node{}, map[string]string{}}}
+	mgfs := newMegaFS()
+	m := &Mega{
+		config: cfg,
+		sn:     bigx.Int64(),
+		fs:     mgfs,
+	}
 	return m
 }
 
@@ -162,7 +190,8 @@ func (m *Mega) api_request(r []byte) ([]byte, error) {
 	}
 
 	for i := 0; i < m.retries+1; i++ {
-		resp, err = http.Post(url, "application/json", bytes.NewBuffer(r))
+		client := newHttpClient(m.timeout)
+		resp, err = client.Post(url, "application/json", bytes.NewBuffer(r))
 		if err == nil {
 			if resp.StatusCode == 200 {
 				goto success
@@ -453,9 +482,10 @@ func (m Mega) DownloadFile(src *Node, dstpath string) error {
 				chk_start := sorted_chunks[id]
 				chk_size := chunks[chk_start]
 				mutex.Unlock()
+				client := newHttpClient(m.timeout)
 				chunk_url := fmt.Sprintf("%s/%d-%d", resourceUrl, chk_start, chk_start+chk_size-1)
 				for retry := 0; retry < m.retries+1; retry++ {
-					resource, err = http.Get(chunk_url)
+					resource, err = client.Get(chunk_url)
 					if err == nil {
 						break
 					}
@@ -557,8 +587,6 @@ func (m Mega) UploadFile(srcpath string, parent *Node) (*Node, error) {
 	mac_enc := cipher.NewCBCEncrypter(aes_block, mac_data)
 	iv := a32_to_bytes([]uint32{ukey[4], ukey[5], ukey[4], ukey[5]})
 
-	client := &http.Client{}
-
 	sorted_chunks := []int{}
 	chunks := getChunkSizes(int(fileSize))
 	chunk_macs := make([][]byte, len(chunks))
@@ -611,7 +639,7 @@ func (m Mega) UploadFile(srcpath string, parent *Node) (*Node, error) {
 				mutex.Unlock()
 
 				ctr_aes.XORKeyStream(chunk, chunk)
-
+				client := newHttpClient(m.timeout)
 				chk_url := fmt.Sprintf("%s/%d", uploadUrl, chk_start)
 				reader := bytes.NewBuffer(chunk)
 				req, _ := http.NewRequest("POST", chk_url, reader)
