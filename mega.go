@@ -26,9 +26,9 @@ const (
 	RETRIES              = 5
 	DOWNLOAD_WORKERS     = 3
 	MAX_DOWNLOAD_WORKERS = 6
-	UPLOAD_WORKERS       = 3
+	UPLOAD_WORKERS       = 1
 	MAX_UPLOAD_WORKERS   = 6
-	TIMEOUT              = time.Second * 3
+	TIMEOUT              = time.Second * 10
 )
 
 type config struct {
@@ -136,7 +136,9 @@ func (n *Node) RemoveChild(c *Node) bool {
 }
 
 func (n *Node) AddChild(c *Node) {
-	n.children = append(n.children, c)
+	if n != nil {
+		n.children = append(n.children, c)
+	}
 }
 
 type NodeMeta struct {
@@ -183,6 +185,11 @@ func (m *Mega) api_request(r []byte) ([]byte, error) {
 	var err error
 	var resp *http.Response
 	var buf []byte
+
+	defer func() {
+		m.sn++
+	}()
+
 	url := fmt.Sprintf("%s?id=%d", m.baseurl, m.sn)
 
 	if m.sid != nil {
@@ -200,31 +207,40 @@ func (m *Mega) api_request(r []byte) ([]byte, error) {
 		}
 
 		if err != nil {
-			return nil, err
+			continue
 		}
 
 	success:
 		buf, _ = ioutil.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if bytes.HasPrefix(buf, []byte("[")) == false {
+			return nil, EBADRESP
+		}
 
 		if len(buf) < 6 {
 			var emsg [1]ErrorMsg
-			err := json.Unmarshal(buf, &emsg)
+			err = json.Unmarshal(buf, &emsg)
 			if err != nil {
-				json.Unmarshal(buf, &emsg[0])
+				err = json.Unmarshal(buf, &emsg[0])
+			}
+			if err != nil {
+				return buf, EBADRESP
 			}
 			err = parseError(emsg[0])
 			if err == EAGAIN {
 				continue
 			}
 
-			if err != nil {
-				return nil, err
-			}
+			return buf, err
+		}
+
+		if err == nil {
+			return buf, nil
 		}
 	}
 
-	m.sn++
-	return buf, nil
+	return nil, err
 }
 
 // Authenticate and start a session
@@ -250,7 +266,11 @@ func (m *Mega) Login(email string, passwd string) error {
 		return err
 	}
 
-	json.Unmarshal(result, &res)
+	err = json.Unmarshal(result, &res)
+	if err != nil {
+		return err
+	}
+
 	m.k = base64urldecode([]byte(res[0].Key))
 	cipher, err := aes.NewCipher(passkey)
 	cipher.Decrypt(m.k, m.k)
@@ -273,8 +293,8 @@ func (m Mega) GetUser() (UserResp, error) {
 		return res[0], err
 	}
 
-	json.Unmarshal(result, &res)
-	return res[0], nil
+	err = json.Unmarshal(result, &res)
+	return res[0], err
 }
 
 // Add a node into filesystem
@@ -400,7 +420,11 @@ func (m *Mega) GetFileSystem() error {
 		return err
 	}
 
-	json.Unmarshal(result, &res)
+	err = json.Unmarshal(result, &res)
+	if err != nil {
+		return err
+	}
+
 	for _, sk := range res[0].Ok {
 		m.fs.skmap[sk.Hash] = sk.Key
 	}
@@ -414,6 +438,10 @@ func (m *Mega) GetFileSystem() error {
 
 // Download file from filesystem
 func (m Mega) DownloadFile(src *Node, dstpath string) error {
+	if src == nil {
+		return EARGS
+	}
+
 	var msg [1]DownloadMsg
 	var res [1]DownloadResp
 	var outfile *os.File
@@ -439,7 +467,10 @@ func (m Mega) DownloadFile(src *Node, dstpath string) error {
 		return err
 	}
 
-	json.Unmarshal(result, &res)
+	err = json.Unmarshal(result, &res)
+	if err != nil {
+		return err
+	}
 	resourceUrl := res[0].G
 
 	_, err = decryptAttr(src.meta.key, []byte(res[0].Attr))
@@ -461,20 +492,19 @@ func (m Mega) DownloadFile(src *Node, dstpath string) error {
 	sort.Ints(sorted_chunks)
 
 	workch := make(chan int)
-	wg := sync.WaitGroup{}
+	donech := make(chan error)
+	quitch := make(chan bool)
 
 	// Fire chunk download workers
 	for w := 0; w < m.dl_workers; w++ {
 		go func() {
 			var id int
-			var live bool
 			for {
 				// Wait for work blocked on channel
 				select {
-				case id, live = <-workch:
-					if !live {
-						return
-					}
+				case <-quitch:
+					return
+				case id = <-workch:
 				}
 
 				var resource *http.Response
@@ -491,11 +521,23 @@ func (m Mega) DownloadFile(src *Node, dstpath string) error {
 					}
 				}
 
-				ctr_iv := bytes_to_a32(src.meta.iv)
-				ctr_iv[2] = uint32(uint64(chk_start) / 0x1000000000)
-				ctr_iv[3] = uint32(chk_start / 0x10)
-				ctr_aes := cipher.NewCTR(aes_block, a32_to_bytes(ctr_iv))
-				chunk, _ := ioutil.ReadAll(resource.Body)
+				var ctr_iv []uint32
+				var ctr_aes cipher.Stream
+				var chunk []byte
+
+				if err == nil {
+					ctr_iv = bytes_to_a32(src.meta.iv)
+					ctr_iv[2] = uint32(uint64(chk_start) / 0x1000000000)
+					ctr_iv[3] = uint32(chk_start / 0x10)
+					ctr_aes = cipher.NewCTR(aes_block, a32_to_bytes(ctr_iv))
+					chunk, err = ioutil.ReadAll(resource.Body)
+				}
+
+				if err != nil {
+					donech <- err
+					continue
+				}
+				resource.Body.Close()
 				ctr_aes.XORKeyStream(chunk, chunk)
 				outfile.WriteAt(chunk, int64(chk_start))
 
@@ -512,20 +554,34 @@ func (m Mega) DownloadFile(src *Node, dstpath string) error {
 				chunk_macs[id] = make([]byte, 16)
 				copy(chunk_macs[id], block)
 				mutex.Unlock()
-				wg.Done()
+				donech <- nil
 			}
 		}()
 	}
 
-	// Place works to the channel
-	for id := 0; id < len(chunks); id++ {
-		wg.Add(1)
-		workch <- id
+	var status error
+
+	// Place chunk download jobs to chan
+	for id := 0; id < len(chunks); {
+		select {
+		case workch <- id:
+			id += 1
+		}
+		select {
+		case status = <-donech:
+			if status != nil {
+				for w := 0; w < m.ul_workers; w++ {
+					quitch <- true
+				}
+				break
+			}
+		}
 	}
 
-	// Wait for chunk downloads to complete
-	wg.Wait()
-	close(workch)
+	if status != nil {
+		os.Remove(dstpath)
+		return status
+	}
 
 	for _, v := range chunk_macs {
 		mac_enc.CryptBlocks(mac_data, v)
@@ -534,7 +590,7 @@ func (m Mega) DownloadFile(src *Node, dstpath string) error {
 	outfile.Close()
 	tmac := bytes_to_a32(mac_data)
 	if bytes.Equal(a32_to_bytes([]uint32{tmac[0] ^ tmac[1], tmac[2] ^ tmac[3]}), src.meta.mac) == false {
-		return errors.New("MAC Mismatch")
+		return EMACMISMATCH
 	}
 
 	return nil
@@ -542,6 +598,10 @@ func (m Mega) DownloadFile(src *Node, dstpath string) error {
 
 // Upload a file to the filesystem
 func (m Mega) UploadFile(srcpath string, parent *Node) (*Node, error) {
+	if parent == nil {
+		return nil, EARGS
+	}
+
 	var msg [1]UploadMsg
 	var res [1]UploadResp
 	var cmsg [1]UploadCompleteMsg
@@ -570,7 +630,11 @@ func (m Mega) UploadFile(srcpath string, parent *Node) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	json.Unmarshal(result, &res)
+
+	err = json.Unmarshal(result, &res)
+	if err != nil {
+		return nil, err
+	}
 
 	uploadUrl := res[0].P
 	ukey := []uint32{0, 0, 0, 0, 0, 0}
@@ -596,18 +660,17 @@ func (m Mega) UploadFile(srcpath string, parent *Node) (*Node, error) {
 	}
 	sort.Ints(sorted_chunks)
 	workch := make(chan int)
-	wg := sync.WaitGroup{}
+	donech := make(chan error)
+	quitch := make(chan bool)
 
 	for w := 0; w < m.ul_workers; w++ {
 		go func() {
 			var id int
-			var live bool
 			for {
 				select {
-				case id, live = <-workch:
-					if !live {
-						return
-					}
+				case <-quitch:
+					return
+				case id = <-workch:
 				}
 
 				mutex.Lock()
@@ -643,27 +706,51 @@ func (m Mega) UploadFile(srcpath string, parent *Node) (*Node, error) {
 				chk_url := fmt.Sprintf("%s/%d", uploadUrl, chk_start)
 				reader := bytes.NewBuffer(chunk)
 				req, _ := http.NewRequest("POST", chk_url, reader)
-				rsp, _ := client.Do(req)
-				chunk_resp, _ := ioutil.ReadAll(rsp.Body)
+				rsp, err := client.Do(req)
+				chunk_resp := []byte{}
+				if err == nil {
+					chunk_resp, err = ioutil.ReadAll(rsp.Body)
+				}
+
+				if err != nil {
+					donech <- err
+					continue
+				}
+				rsp.Body.Close()
 				if bytes.Equal(chunk_resp, nil) == false {
 					mutex.Lock()
 					completion_handle = chunk_resp
 					mutex.Unlock()
 
 				}
-				wg.Done()
+				donech <- nil
 			}
 		}()
 	}
 
+	var status error
+
 	// Place chunk upload jobs to chan
-	for id := 0; id < len(chunks); id++ {
-		wg.Add(1)
-		workch <- id
+	for id := 0; id < len(chunks); {
+		select {
+		case workch <- id:
+			id += 1
+		}
+
+		select {
+		case status = <-donech:
+			if status != nil {
+				for w := 0; w < m.ul_workers; w++ {
+					quitch <- true
+				}
+				break
+			}
+		}
 	}
 
-	wg.Wait()
-	close(workch)
+	if status != nil {
+		return nil, status
+	}
 
 	for _, v := range chunk_macs {
 		mac_enc.CryptBlocks(mac_data, v)
@@ -702,7 +789,10 @@ func (m Mega) UploadFile(srcpath string, parent *Node) (*Node, error) {
 		return nil, err
 	}
 
-	json.Unmarshal(result, &cres)
+	err = json.Unmarshal(result, &cres)
+	if err != nil {
+		return nil, err
+	}
 	node, err := m.AddFSNode(cres[0].F[0])
 
 	return node, err
@@ -710,6 +800,9 @@ func (m Mega) UploadFile(srcpath string, parent *Node) (*Node, error) {
 
 // Move a file from one location to another
 func (m Mega) Move(src *Node, parent *Node) error {
+	if src == nil || parent == nil {
+		return EARGS
+	}
 	var msg [1]MoveFileMsg
 
 	msg[0].Cmd = "m"
@@ -735,6 +828,9 @@ func (m Mega) Move(src *Node, parent *Node) error {
 
 // Rename a file or folder
 func (m Mega) Rename(src *Node, name string) error {
+	if src == nil {
+		return EARGS
+	}
 	var msg [1]FileAttrMsg
 
 	master_aes, _ := aes.NewCipher(m.k)
@@ -757,6 +853,9 @@ func (m Mega) Rename(src *Node, name string) error {
 
 // Create a directory in the filesystem
 func (m Mega) CreateDir(name string, parent *Node) (*Node, error) {
+	if parent == nil {
+		return nil, EARGS
+	}
 	var msg [1]UploadCompleteMsg
 	var res [1]UploadCompleteResp
 
@@ -787,7 +886,10 @@ func (m Mega) CreateDir(name string, parent *Node) (*Node, error) {
 		return nil, err
 	}
 
-	json.Unmarshal(result, &res)
+	err = json.Unmarshal(result, &res)
+	if err != nil {
+		return nil, err
+	}
 	node, err := m.AddFSNode(res[0].F[0])
 
 	return node, err
@@ -795,6 +897,9 @@ func (m Mega) CreateDir(name string, parent *Node) (*Node, error) {
 
 // Delete a file or directory from filesystem
 func (m Mega) Delete(node *Node, destroy bool) error {
+	if node == nil {
+		return EARGS
+	}
 	if destroy == false {
 		m.Move(node, m.fs.trash)
 		return nil

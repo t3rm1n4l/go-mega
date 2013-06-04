@@ -17,6 +17,8 @@ import (
 )
 
 func newHttpClient(timeout time.Duration) *http.Client {
+	// TODO: Need to test this out
+	// Doesn't seem to work as expected
 	c := &http.Client{
 		Transport: &http.Transport{
 			Dial: func(netw, addr string) (net.Conn, error) {

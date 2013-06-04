@@ -10,6 +10,7 @@ var (
 	EARGS      = errors.New("Invalid arguments")
 	EAGAIN     = errors.New("Try again")
 	ERATELIMIT = errors.New("Rate limit reached")
+	EBADRESP   = errors.New("Bad response from server")
 
 	// Upload errors
 	EFAILED  = errors.New("The upload failed. Please restart it from scratch")
@@ -27,7 +28,8 @@ var (
 	ESID         = errors.New("Invalid or expired user session, please relogin")
 	EBLOCKED     = errors.New("User blocked")
 	EOVERQUOTA   = errors.New("Request over quota")
-	ETEMPUNAVAIL = errors.New(" Resource temporarily not available, please try again later")
+	ETEMPUNAVAIL = errors.New("Resource temporarily not available, please try again later")
+	EMACMISMATCH = errors.New("MAC verification failed")
 
 	// Config errors
 	EWORKER_LIMIT_EXCEEDED = errors.New("Maximum worker limit exceeded")

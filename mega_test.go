@@ -210,10 +210,6 @@ func TestConfig(t *testing.T) {
 		t.Error("Upload: Expected EWORKER_LIMIT_EXCEEDED error")
 	}
 
-	m.SetTimeOut(time.Second)
-	m.GetFileSystem()
-	name, _ := createFile(31000)
-	_, err = m.UploadFile(name, m.fs.root)
-	fmt.Println("timeed out", err)
-	os.Remove(name)
+	// TODO: Add timeout test cases
+
 }
