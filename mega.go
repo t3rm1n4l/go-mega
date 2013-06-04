@@ -19,14 +19,59 @@ import (
 	"sync"
 )
 
+// Default settings
 const (
-	API_URL          = "https://eu.api.mega.co.nz/cs"
-	RETRIES          = 5
-	DOWNLOAD_WORKERS = 6
-	UPLOAD_WORKERS   = 6
+	API_URL              = "https://eu.api.mega.co.nz/cs"
+	RETRIES              = 5
+	DOWNLOAD_WORKERS     = 3
+	MAX_DOWNLOAD_WORKERS = 6
+	UPLOAD_WORKERS       = 3
+	MAX_UPLOAD_WORKERS   = 6
 )
 
+type config struct {
+	baseurl    string
+	retries    int
+	dl_workers int
+	ul_workers int
+}
+
+func newConfig() config {
+	return config{API_URL, RETRIES, DOWNLOAD_WORKERS, UPLOAD_WORKERS}
+}
+
+// Set mega service base url
+func (c *config) SetAPIUrl(u string) {
+	c.baseurl = u
+}
+
+// Set number of retries for api calls
+func (c *config) SetRetries(r int) {
+	c.retries = r
+}
+
+// Set concurrent download workers
+func (c *config) SetDownloadWorkers(w int) error {
+	if w <= MAX_DOWNLOAD_WORKERS {
+		c.dl_workers = w
+		return nil
+	}
+
+	return EWORKER_LIMIT_EXCEEDED
+}
+
+// Set concurrent upload workers
+func (c *config) SetUploadWorkers(w int) error {
+	if w <= MAX_UPLOAD_WORKERS {
+		c.ul_workers = w
+		return nil
+	}
+
+	return EWORKER_LIMIT_EXCEEDED
+}
+
 type Mega struct {
+	config
 	// Sequence number
 	sn int64
 	// Session ID
@@ -100,7 +145,8 @@ type MegaFS struct {
 func New() *Mega {
 	max := big.NewInt(0x100000000)
 	bigx, _ := rand.Int(rand.Reader, max)
-	m := &Mega{bigx.Int64(), nil, nil, nil, MegaFS{nil, nil, nil, []*Node{}, map[string]*Node{}, map[string]string{}}}
+	cfg := newConfig()
+	m := &Mega{cfg, bigx.Int64(), nil, nil, nil, MegaFS{nil, nil, nil, []*Node{}, map[string]*Node{}, map[string]string{}}}
 	return m
 }
 
@@ -109,13 +155,13 @@ func (m *Mega) api_request(r []byte) ([]byte, error) {
 	var err error
 	var resp *http.Response
 	var buf []byte
-	url := fmt.Sprintf("%s?id=%d", API_URL, m.sn)
+	url := fmt.Sprintf("%s?id=%d", m.baseurl, m.sn)
 
 	if m.sid != nil {
 		url = fmt.Sprintf("%s&sid=%s", url, string(m.sid))
 	}
 
-	for i := 0; i < RETRIES; i++ {
+	for i := 0; i < m.retries+1; i++ {
 		resp, err = http.Post(url, "application/json", bytes.NewBuffer(r))
 		if err == nil {
 			if resp.StatusCode == 200 {
@@ -389,7 +435,7 @@ func (m Mega) DownloadFile(src *Node, dstpath string) error {
 	wg := sync.WaitGroup{}
 
 	// Fire chunk download workers
-	for w := 0; w < DOWNLOAD_WORKERS; w++ {
+	for w := 0; w < m.dl_workers; w++ {
 		go func() {
 			var id int
 			var live bool
@@ -408,7 +454,7 @@ func (m Mega) DownloadFile(src *Node, dstpath string) error {
 				chk_size := chunks[chk_start]
 				mutex.Unlock()
 				chunk_url := fmt.Sprintf("%s/%d-%d", resourceUrl, chk_start, chk_start+chk_size-1)
-				for retry := 0; retry < RETRIES; retry++ {
+				for retry := 0; retry < m.retries+1; retry++ {
 					resource, err = http.Get(chunk_url)
 					if err == nil {
 						break
@@ -524,7 +570,7 @@ func (m Mega) UploadFile(srcpath string, parent *Node) (*Node, error) {
 	workch := make(chan int)
 	wg := sync.WaitGroup{}
 
-	for w := 0; w < UPLOAD_WORKERS; w++ {
+	for w := 0; w < m.ul_workers; w++ {
 		go func() {
 			var id int
 			var live bool

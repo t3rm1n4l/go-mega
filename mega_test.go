@@ -190,3 +190,22 @@ func TestCreateDir(t *testing.T) {
 		t.Error("Wrong directory parent")
 	}
 }
+
+func TestConfig(t *testing.T) {
+	m := New()
+	m.SetAPIUrl("http://example.com")
+	err := m.Login(USER, PASSWORD)
+	if err == nil {
+		t.Error("API Url: Expected failure")
+	}
+
+	err = m.SetDownloadWorkers(100)
+	if err != EWORKER_LIMIT_EXCEEDED {
+		t.Error("Download: Expected EWORKER_LIMIT_EXCEEDED error")
+	}
+
+	err = m.SetUploadWorkers(100)
+	if err != EWORKER_LIMIT_EXCEEDED {
+		t.Error("Upload: Expected EWORKER_LIMIT_EXCEEDED error")
+	}
+}

@@ -28,6 +28,9 @@ var (
 	EBLOCKED     = errors.New("User blocked")
 	EOVERQUOTA   = errors.New("Request over quota")
 	ETEMPUNAVAIL = errors.New(" Resource temporarily not available, please try again later")
+
+	// Config errors
+	EWORKER_LIMIT_EXCEEDED = errors.New("Maximum worker limit exceeded")
 )
 
 type ErrorMsg int
