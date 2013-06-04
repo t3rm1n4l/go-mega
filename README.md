@@ -3,6 +3,8 @@ go-mega
 
 A client library in go for mega.co.nz storage service
 
+[![Build Status](https://secure.travis-ci.org/t3rm1n4l/go-mega.png?branch=master)](http://travis-ci.org/t3rm1n4l/go-mega)
+
 ### What can i do with this library?
 This is an API client library for MEGA storage service. Currently, the library supports the basic APIs and operations as follows:
   - User login

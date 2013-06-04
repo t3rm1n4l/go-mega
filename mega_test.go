@@ -7,13 +7,10 @@ import (
 	"io/ioutil"
 	"os"
 	"testing"
-	"time"
 )
 
-const (
-	USER     = "someaccount"
-	PASSWORD = "password"
-)
+var USER     string = os.Getenv("MEGA_USER")
+var PASSWORD string =  os.Getenv("MEGA_PASSWD")
 
 func initSession() *Mega {
 	m := New()
@@ -73,7 +70,7 @@ func TestUploadDownload(t *testing.T) {
 	session := initSession()
 	session.GetFileSystem()
 	name, h1 := createFile(314573)
-	node, err := session.UploadFile(name, session.fs.root)
+	node, err := session.UploadFile(name, session.FS.root)
 	os.Remove(name)
 	if err != nil {
 		t.Fatal("Upload failed", err)
@@ -83,9 +80,9 @@ func TestUploadDownload(t *testing.T) {
 		t.Error("Failed to obtain node after upload")
 	}
 
-	phash := session.fs.root.hash
+	phash := session.FS.root.hash
 	session.GetFileSystem()
-	n := session.fs.lookup[node.hash]
+	n := session.FS.lookup[node.hash]
 	if n.parent.hash != phash {
 		t.Error("Parent of uploaded file mismatch")
 	}
@@ -107,18 +104,18 @@ func TestMove(t *testing.T) {
 	session := initSession()
 	session.GetFileSystem()
 	name, _ := createFile(31)
-	node, err := session.UploadFile(name, session.fs.root)
+	node, err := session.UploadFile(name, session.FS.root)
 	os.Remove(name)
 
 	hash := node.hash
-	phash := session.fs.trash.hash
-	err = session.Move(node, session.fs.trash)
+	phash := session.FS.trash.hash
+	err = session.Move(node, session.FS.trash)
 	if err != nil {
 		t.Fatal("Move failed", err)
 	}
 
 	session.GetFileSystem()
-	n := session.fs.lookup[hash]
+	n := session.FS.lookup[hash]
 	if n.parent.hash != phash {
 		t.Error("Move happened to wrong parent", phash, n.parent.hash)
 	}
@@ -128,7 +125,7 @@ func TestRename(t *testing.T) {
 	session := initSession()
 	session.GetFileSystem()
 	name, _ := createFile(31)
-	node, err := session.UploadFile(name, session.fs.root)
+	node, err := session.UploadFile(name, session.FS.root)
 	os.Remove(name)
 
 	err = session.Rename(node, "newname.txt")
@@ -137,7 +134,7 @@ func TestRename(t *testing.T) {
 	}
 
 	session.GetFileSystem()
-	newname := session.fs.lookup[node.hash].name
+	newname := session.FS.lookup[node.hash].name
 	if newname != "newname.txt" {
 		t.Error("Renamed to wrong name", newname)
 	}
@@ -147,7 +144,7 @@ func TestDelete(t *testing.T) {
 	session := initSession()
 	session.GetFileSystem()
 	name, _ := createFile(31)
-	node, _ := session.UploadFile(name, session.fs.root)
+	node, _ := session.UploadFile(name, session.FS.root)
 	os.Remove(name)
 
 	err := session.Delete(node, false)
@@ -156,8 +153,8 @@ func TestDelete(t *testing.T) {
 	}
 
 	session.GetFileSystem()
-	node = session.fs.lookup[node.hash]
-	if node.parent != session.fs.trash {
+	node = session.FS.lookup[node.hash]
+	if node.parent != session.FS.trash {
 		t.Error("Expects file to be moved to trash")
 	}
 
@@ -167,7 +164,7 @@ func TestDelete(t *testing.T) {
 	}
 
 	session.GetFileSystem()
-	if _, ok := session.fs.lookup[node.hash]; ok {
+	if _, ok := session.FS.lookup[node.hash]; ok {
 		t.Error("Expects file to be dissapeared")
 	}
 }
@@ -175,7 +172,7 @@ func TestDelete(t *testing.T) {
 func TestCreateDir(t *testing.T) {
 	session := initSession()
 	session.GetFileSystem()
-	node, err := session.CreateDir("testdir1", session.fs.root)
+	node, err := session.CreateDir("testdir1", session.FS.root)
 	if err != nil {
 		t.Fatal("Failed to create directory-1", err)
 	}
@@ -186,7 +183,7 @@ func TestCreateDir(t *testing.T) {
 	}
 
 	session.GetFileSystem()
-	nnode2 := session.fs.lookup[node2.hash]
+	nnode2 := session.FS.lookup[node2.hash]
 	if nnode2.parent.hash != node.hash {
 		t.Error("Wrong directory parent")
 	}

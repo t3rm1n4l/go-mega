@@ -1,0 +1,11 @@
+--- 
+script: go test -v ./...
+env: 
+  matrix: 
+    secure: |-
+      mqNnmgBfeco5VKtYyWp/p+bsseTzJfQV7YJnSG3WACP52RUnHvQnmE3Fo5Sw
+      3/8CDczZb7zQ6uqwlMDubaxQpVEskQ0WfbbBNVkNMWTo47wG3OrdFBUY4Hk1
+      Jo+MUk7/ToKXHSP2A+ncZIVWrYhqUzSPslzURn3V62DSIJKk5v0=
+notifications: 
+  email: false
+language: go
