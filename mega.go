@@ -95,7 +95,7 @@ type Mega struct {
 	// User handle
 	uh []byte
 	// Filesystem object
-	fs *MegaFS
+	FS *MegaFS
 }
 
 // Filesystem node types
@@ -158,6 +158,35 @@ type MegaFS struct {
 	skmap  map[string]string
 }
 
+// Get filesystem root node
+func (fs MegaFS) GetRoot() *Node {
+	return fs.root
+}
+
+// Get filesystem trash node
+func (fs MegaFS) GetTrash() *Node {
+	return fs.trash
+}
+
+// Get inbox node
+func (fs MegaFS) GetInbox() *Node {
+	return fs.inbox
+}
+
+// Get a node pointer from its hash
+func (fs MegaFS) HashLookup(h string) *Node {
+	if node, ok := fs.lookup[h]; ok {
+		return node
+	}
+
+	return nil
+}
+
+// Get top level directory nodes shared by other users
+func (fs MegaFS) GetSharedRoots() []*Node {
+	return fs.sroots
+}
+
 func newMegaFS() *MegaFS {
 	fs := &MegaFS{
 		lookup: make(map[string]*Node),
@@ -170,12 +199,11 @@ func New() *Mega {
 	max := big.NewInt(0x100000000)
 	bigx, _ := rand.Int(rand.Reader, max)
 	cfg := newConfig()
-	//m := &Mega{cfg, bigx.Int64(), nil, nil, nil, MegaFS{nil, nil, nil, []*Node{}, map[string]*Node{}, map[string]string{}}}
 	mgfs := newMegaFS()
 	m := &Mega{
 		config: cfg,
 		sn:     bigx.Int64(),
-		fs:     mgfs,
+		FS:     mgfs,
 	}
 	return m
 }
@@ -322,13 +350,13 @@ func (m *Mega) AddFSNode(itm FSNode) (*Node, error) {
 			blockDecrypt(master_aes, sk, sk)
 			sk_aes, _ := aes.NewCipher(sk)
 
-			m.fs.skmap[itm.Hash] = itm.SKey
+			m.FS.skmap[itm.Hash] = itm.SKey
 			buf := base64urldecode([]byte(args[1]))
 			blockDecrypt(sk_aes, buf, buf)
 			compkey = bytes_to_a32(buf)
 			// Shared file
 		default:
-			k := m.fs.skmap[args[0]]
+			k := m.FS.skmap[args[0]]
 			b := base64urldecode([]byte(k))
 			blockDecrypt(master_aes, b, b)
 			block, _ := aes.NewCipher(b)
@@ -351,16 +379,16 @@ func (m *Mega) AddFSNode(itm FSNode) (*Node, error) {
 		}
 	}
 
-	n, ok := m.fs.lookup[itm.Hash]
+	n, ok := m.FS.lookup[itm.Hash]
 	switch {
 	case ok:
 		node = n
 	default:
 		node = &Node{"", "", nil, []*Node{}, itm.T, NodeMeta{[]byte{}, []byte{}, []byte{}, []byte{}}}
-		m.fs.lookup[itm.Hash] = node
+		m.FS.lookup[itm.Hash] = node
 	}
 
-	n, ok = m.fs.lookup[itm.Parent]
+	n, ok = m.FS.lookup[itm.Parent]
 	switch {
 	case ok:
 		parent = n
@@ -369,7 +397,7 @@ func (m *Mega) AddFSNode(itm FSNode) (*Node, error) {
 		parent = nil
 		if itm.Parent != "" {
 			parent = &Node{"", "", nil, []*Node{node}, FOLDER, NodeMeta{[]byte{}, []byte{}, []byte{}, []byte{}}}
-			m.fs.lookup[itm.Parent] = parent
+			m.FS.lookup[itm.Parent] = parent
 		}
 	}
 
@@ -383,18 +411,18 @@ func (m *Mega) AddFSNode(itm FSNode) (*Node, error) {
 		node.meta = meta
 	case itm.T == ROOT:
 		attr.Name = "Cloud Drive"
-		m.fs.root = node
+		m.FS.root = node
 	case itm.T == INBOX:
 		attr.Name = "InBox"
-		m.fs.inbox = node
+		m.FS.inbox = node
 	case itm.T == TRASH:
 		attr.Name = "Trash"
-		m.fs.trash = node
+		m.FS.trash = node
 	}
 
 	// Shared directories
 	if itm.SUser != "" && itm.SKey != "" {
-		m.fs.sroots = append(m.fs.sroots, node)
+		m.FS.sroots = append(m.FS.sroots, node)
 	}
 
 	node.name = attr.Name
@@ -426,7 +454,7 @@ func (m *Mega) GetFileSystem() error {
 	}
 
 	for _, sk := range res[0].Ok {
-		m.fs.skmap[sk.Hash] = sk.Key
+		m.FS.skmap[sk.Hash] = sk.Key
 	}
 
 	for _, itm := range res[0].F {
@@ -817,7 +845,7 @@ func (m Mega) Move(src *Node, parent *Node) error {
 		return err
 	}
 
-	if node, ok := m.fs.lookup[src.parent.hash]; ok {
+	if node, ok := m.FS.lookup[src.parent.hash]; ok {
 		node.RemoveChild(node)
 		parent.AddChild(src)
 		src.parent = parent
@@ -901,7 +929,7 @@ func (m Mega) Delete(node *Node, destroy bool) error {
 		return EARGS
 	}
 	if destroy == false {
-		m.Move(node, m.fs.trash)
+		m.Move(node, m.FS.trash)
 		return nil
 	}
 
@@ -913,9 +941,9 @@ func (m Mega) Delete(node *Node, destroy bool) error {
 	req, _ := json.Marshal(msg)
 	_, err := m.api_request(req)
 
-	parent := m.fs.lookup[node.hash]
+	parent := m.FS.lookup[node.hash]
 	parent.RemoveChild(node)
-	delete(m.fs.lookup, node.hash)
+	delete(m.FS.lookup, node.hash)
 
 	return err
 }
