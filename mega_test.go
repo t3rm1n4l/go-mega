@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"path"
 	"testing"
 )
 
@@ -209,4 +210,96 @@ func TestConfig(t *testing.T) {
 
 	// TODO: Add timeout test cases
 
+}
+
+
+func TestPathLookup(t *testing.T) {
+	session := initSession()
+	session.GetFileSystem()
+
+	rs := randString(5)
+	node1, err := session.CreateDir("dir-1-"+rs, session.FS.root)
+	if err != nil {
+		t.Fatal("Failed to create directory-1", err)
+	}
+
+	node21, err := session.CreateDir("dir-2-1-"+rs, node1)
+	if err != nil {
+		t.Fatal("Failed to create directory-2-1", err)
+	}
+
+	node22, err := session.CreateDir("dir-2-2-"+rs, node1)
+	if err != nil {
+		t.Fatal("Failed to create directory-2-2", err)
+	}
+
+	node31, err := session.CreateDir("dir-3-1-"+rs, node21)
+	if err != nil {
+		t.Fatal("Failed to create directory-3-1", err)
+	}
+
+	node32, err := session.CreateDir("dir-3-2-"+rs, node22)
+	_ = node32
+	if err != nil {
+		t.Fatal("Failed to create directory-3-2", err)
+	}
+
+	// FIXME: Fix this hack when update listener is implemented
+	session.GetFileSystem()
+	name1, _ := createFile(31)
+	_, err = session.UploadFile(name1, node31)
+	os.Remove(name1)
+
+	if err != nil {
+		t.Fatal("Failed to upload file name1", err)
+	}
+
+	session.GetFileSystem()
+	name2, _ := createFile(31)
+	_, err = session.UploadFile(name2, node31)
+	os.Remove(name2)
+
+	if err != nil {
+		t.Fatal("Failed to upload file name2", err)
+	}
+
+	session.GetFileSystem()
+	name3, _ := createFile(31)
+	_, err = session.UploadFile(name3, node22)
+	os.Remove(name3)
+
+	if err != nil {
+		t.Fatal("Failed to upload file name3", err)
+	}
+
+	testpaths := [][]string{
+		{"dir-1-" + rs, "dir-2-2-" + rs, path.Base(name3)},
+		{"dir-1-" + rs, "dir-2-1-" + rs, "dir-3-1-" + rs},
+		{"dir-1-" + rs, "dir-2-1-" + rs, "dir-3-1-" + rs, path.Base(name1)},
+		{"dir-1-" + rs, "dir-2-1-" + rs, "none"},
+	}
+
+	results := []error{nil, nil, nil, ENOENT}
+
+	for i, tst := range testpaths {
+		ns, e := session.FS.PathLookup(session.FS.root, tst)
+		switch {
+		case e != results[i]:
+			t.Errorf("Test %d failed: wrong result", i)
+		default:
+			if results[i] == nil && len(tst) != len(ns) {
+				t.Errorf("Test %d failed: result array len (%d) mismatch", i, len(ns))
+
+			}
+
+			arr := []string{}
+			for n := range ns {
+				if tst[n] != ns[n].name {
+					t.Errorf("Test %d failed: result node mismatches (%v) and (%v)", i, tst, arr)
+					break
+				}
+				arr = append(arr, tst[n])
+			}
+		}
+	}
 }
