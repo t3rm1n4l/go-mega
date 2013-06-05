@@ -9,8 +9,8 @@ import (
 	"testing"
 )
 
-var USER     string = os.Getenv("MEGA_USER")
-var PASSWORD string =  os.Getenv("MEGA_PASSWD")
+var USER string = os.Getenv("MEGA_USER")
+var PASSWORD string = os.Getenv("MEGA_PASSWD")
 
 func initSession() *Mega {
 	m := New()

@@ -141,6 +141,14 @@ func (n *Node) AddChild(c *Node) {
 	}
 }
 
+func (n Node) GetChildren() []*Node {
+	return n.children
+}
+
+func (n Node) GetType() int {
+	return n.ntype
+}
+
 type NodeMeta struct {
 	key     []byte
 	compkey []byte
@@ -180,6 +188,43 @@ func (fs MegaFS) HashLookup(h string) *Node {
 	}
 
 	return nil
+}
+
+// Retreive all the nodes in the given node tree path by name
+// This method returns array of nodes upto the matched subpath
+// (in same order as input names array) even if the target node is not located.
+func (fs MegaFS) PathLookup(root *Node, ns []string) ([]*Node, error) {
+	if root == nil {
+		return nil, EARGS
+	}
+
+	var err error
+	var found bool = true
+
+	nodepath := []*Node{}
+
+	children := root.children
+	for _, name := range ns {
+		found = false
+		for _, n := range children {
+			if n.name == name {
+				nodepath = append(nodepath, n)
+				children = n.children
+				found = true
+				break
+			}
+		}
+
+		if found == false {
+			break
+		}
+	}
+
+	if found == false {
+		err = ENOENT
+	}
+
+	return nodepath, err
 }
 
 // Get top level directory nodes shared by other users
