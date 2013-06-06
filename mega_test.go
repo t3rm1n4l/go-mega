@@ -71,7 +71,7 @@ func TestUploadDownload(t *testing.T) {
 	session := initSession()
 	session.GetFileSystem()
 	name, h1 := createFile(314573)
-	node, err := session.UploadFile(name, session.FS.root)
+	node, err := session.UploadFile(name, session.FS.root, "", nil)
 	os.Remove(name)
 	if err != nil {
 		t.Fatal("Upload failed", err)
@@ -88,7 +88,7 @@ func TestUploadDownload(t *testing.T) {
 		t.Error("Parent of uploaded file mismatch")
 	}
 
-	err = session.DownloadFile(node, name)
+	err = session.DownloadFile(node, name, nil)
 	if err != nil {
 		t.Fatal("Download failed", err)
 	}
@@ -105,7 +105,7 @@ func TestMove(t *testing.T) {
 	session := initSession()
 	session.GetFileSystem()
 	name, _ := createFile(31)
-	node, err := session.UploadFile(name, session.FS.root)
+	node, err := session.UploadFile(name, session.FS.root, "", nil)
 	os.Remove(name)
 
 	hash := node.hash
@@ -126,7 +126,7 @@ func TestRename(t *testing.T) {
 	session := initSession()
 	session.GetFileSystem()
 	name, _ := createFile(31)
-	node, err := session.UploadFile(name, session.FS.root)
+	node, err := session.UploadFile(name, session.FS.root, "", nil)
 	os.Remove(name)
 
 	err = session.Rename(node, "newname.txt")
@@ -145,7 +145,7 @@ func TestDelete(t *testing.T) {
 	session := initSession()
 	session.GetFileSystem()
 	name, _ := createFile(31)
-	node, _ := session.UploadFile(name, session.FS.root)
+	node, _ := session.UploadFile(name, session.FS.root, "", nil)
 	os.Remove(name)
 
 	err := session.Delete(node, false)
@@ -246,7 +246,7 @@ func TestPathLookup(t *testing.T) {
 	// FIXME: Fix this hack when update listener is implemented
 	session.GetFileSystem()
 	name1, _ := createFile(31)
-	_, err = session.UploadFile(name1, node31)
+	_, err = session.UploadFile(name1, node31, "", nil)
 	os.Remove(name1)
 
 	if err != nil {
@@ -255,7 +255,7 @@ func TestPathLookup(t *testing.T) {
 
 	session.GetFileSystem()
 	name2, _ := createFile(31)
-	_, err = session.UploadFile(name2, node31)
+	_, err = session.UploadFile(name2, node31, "", nil)
 	os.Remove(name2)
 
 	if err != nil {
@@ -264,7 +264,7 @@ func TestPathLookup(t *testing.T) {
 
 	session.GetFileSystem()
 	name3, _ := createFile(31)
-	_, err = session.UploadFile(name3, node22)
+	_, err = session.UploadFile(name3, node22, "", nil)
 	os.Remove(name3)
 
 	if err != nil {

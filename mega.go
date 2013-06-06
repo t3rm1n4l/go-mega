@@ -234,11 +234,6 @@ func (fs MegaFS) PathLookup(root *Node, ns []string) ([]*Node, error) {
 		}
 	}
 
-	if len(ns) == 0 {
-		nodepath = append(nodepath, root)
-		found = true
-	}
-
 	if found == false {
 		err = ENOENT
 	}
@@ -537,7 +532,13 @@ func (m *Mega) GetFileSystem() error {
 }
 
 // Download file from filesystem
-func (m Mega) DownloadFile(src *Node, dstpath string) error {
+func (m Mega) DownloadFile(src *Node, dstpath string, progress *chan int) error {
+	defer func() {
+		if progress != nil {
+			close(*progress)
+		}
+	}()
+
 	if src == nil {
 		return EARGS
 	}
@@ -655,6 +656,10 @@ func (m Mega) DownloadFile(src *Node, dstpath string) error {
 				copy(chunk_macs[id], block)
 				mutex.Unlock()
 				donech <- nil
+
+				if progress != nil {
+					*progress <- chk_size
+				}
 			}
 		}()
 	}
@@ -697,7 +702,13 @@ func (m Mega) DownloadFile(src *Node, dstpath string) error {
 }
 
 // Upload a file to the filesystem
-func (m Mega) UploadFile(srcpath string, parent *Node) (*Node, error) {
+func (m Mega) UploadFile(srcpath string, parent *Node, name string, progress *chan int) (*Node, error) {
+	defer func() {
+		if progress != nil {
+			close(*progress)
+		}
+	}()
+
 	if parent == nil {
 		return nil, EARGS
 	}
@@ -824,6 +835,9 @@ func (m Mega) UploadFile(srcpath string, parent *Node) (*Node, error) {
 
 				}
 				donech <- nil
+				if progress != nil {
+					*progress <- chk_size
+				}
 			}
 		}()
 	}
@@ -860,6 +874,9 @@ func (m Mega) UploadFile(srcpath string, parent *Node) (*Node, error) {
 	meta_mac := []uint32{t[0] ^ t[1], t[2] ^ t[3]}
 
 	filename := filepath.Base(srcpath)
+	if name != "" {
+		filename = name
+	}
 	attr := FileAttr{filename}
 
 	attr_data, _ := encryptAttr(kbytes, attr)
