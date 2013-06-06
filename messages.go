@@ -41,9 +41,10 @@ type FSNode struct {
 	T      int    `json:"t"`
 	Attr   string `json:"a"`
 	Key    string `json:"k"`
-	Ts     int    `json:"ts"`
+	Ts     int64  `json:"ts"`
 	SUser  string `json:"su"`
 	SKey   string `json:"sk"`
+	Sz     int64  `json:"s"`
 }
 
 type FilesResp struct {

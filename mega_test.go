@@ -212,7 +212,6 @@ func TestConfig(t *testing.T) {
 
 }
 
-
 func TestPathLookup(t *testing.T) {
 	session := initSession()
 	session.GetFileSystem()

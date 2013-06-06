@@ -114,6 +114,8 @@ type Node struct {
 	parent   *Node
 	children []*Node
 	ntype    int
+	size     int64
+	ts       time.Time
 	meta     NodeMeta
 }
 
@@ -147,6 +149,18 @@ func (n Node) GetChildren() []*Node {
 
 func (n Node) GetType() int {
 	return n.ntype
+}
+
+func (n Node) GetSize() int64 {
+	return n.size
+}
+
+func (n Node) GetTimeStamp() time.Time {
+	return n.ts
+}
+
+func (n Node) GetName() string {
+	return n.name
 }
 
 type NodeMeta struct {
@@ -218,6 +232,11 @@ func (fs MegaFS) PathLookup(root *Node, ns []string) ([]*Node, error) {
 		if found == false {
 			break
 		}
+	}
+
+	if len(ns) == 0 {
+		nodepath = append(nodepath, root)
+		found = true
 	}
 
 	if found == false {
@@ -429,7 +448,12 @@ func (m *Mega) AddFSNode(itm FSNode) (*Node, error) {
 	case ok:
 		node = n
 	default:
-		node = &Node{"", "", nil, []*Node{}, itm.T, NodeMeta{[]byte{}, []byte{}, []byte{}, []byte{}}}
+		node = &Node{
+			ntype: itm.T,
+			size:  itm.Sz,
+			ts:    time.Unix(itm.Ts, 0),
+		}
+
 		m.FS.lookup[itm.Hash] = node
 	}
 
@@ -441,7 +465,10 @@ func (m *Mega) AddFSNode(itm FSNode) (*Node, error) {
 	default:
 		parent = nil
 		if itm.Parent != "" {
-			parent = &Node{"", "", nil, []*Node{node}, FOLDER, NodeMeta{[]byte{}, []byte{}, []byte{}, []byte{}}}
+			parent = &Node{
+				children: []*Node{node},
+				ntype:    FOLDER,
+			}
 			m.FS.lookup[itm.Parent] = parent
 		}
 	}
