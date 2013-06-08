@@ -478,6 +478,11 @@ func (m *Mega) AddFSNode(itm FSNode) (*Node, error) {
 		meta.mac = a32_to_bytes([]uint32{compkey[6], compkey[7]})
 		meta.compkey = a32_to_bytes(compkey)
 		node.meta = meta
+	case itm.T == FOLDER:
+		var meta NodeMeta
+		meta.key = a32_to_bytes(key)
+		meta.compkey = a32_to_bytes(compkey)
+		node.meta = meta
 	case itm.T == ROOT:
 		attr.Name = "Cloud Drive"
 		m.FS.root = node

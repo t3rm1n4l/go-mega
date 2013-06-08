@@ -183,7 +183,6 @@ func blockDecrypt(blk cipher.Block, dst, src []byte) error {
 	l := len(src) - blk.BlockSize()
 
 	for i := 0; i <= l; i += blk.BlockSize() {
-
 		blk.Decrypt(dst[i:], src[i:])
 	}
 
@@ -199,7 +198,6 @@ func blockEncrypt(blk cipher.Block, dst, src []byte) error {
 	l := len(src) - blk.BlockSize()
 
 	for i := 0; i <= l; i += blk.BlockSize() {
-
 		blk.Encrypt(dst[i:], src[i:])
 	}
 
