@@ -25,7 +25,7 @@ var client *http.Client
 // Default settings
 const (
 	API_URL              = "https://eu.api.mega.co.nz/cs"
-	RETRIES              = 5
+	RETRIES              = 10
 	DOWNLOAD_WORKERS     = 3
 	MAX_DOWNLOAD_WORKERS = 6
 	UPLOAD_WORKERS       = 1
@@ -303,7 +303,7 @@ func (m *Mega) api_request(r []byte) ([]byte, error) {
 		buf, _ = ioutil.ReadAll(resp.Body)
 		resp.Body.Close()
 
-		if bytes.HasPrefix(buf, []byte("[")) == false {
+		if bytes.HasPrefix(buf, []byte("[")) == false && bytes.HasPrefix(buf, []byte("-")) == false {
 			return nil, EBADRESP
 		}
 
@@ -318,6 +318,7 @@ func (m *Mega) api_request(r []byte) ([]byte, error) {
 			}
 			err = parseError(emsg[0])
 			if err == EAGAIN {
+				time.Sleep(time.Millisecond*time.Duration(10))
 				continue
 			}
 
