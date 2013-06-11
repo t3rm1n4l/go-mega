@@ -121,7 +121,7 @@ type Node struct {
 	meta     NodeMeta
 }
 
-func (n *Node) RemoveChild(c *Node) bool {
+func (n *Node) removeChild(c *Node) bool {
 	index := -1
 	for i, v := range n.children {
 		if v == c {
@@ -139,13 +139,13 @@ func (n *Node) RemoveChild(c *Node) bool {
 	return false
 }
 
-func (n *Node) AddChild(c *Node) {
+func (n *Node) addChild(c *Node) {
 	if n != nil {
 		n.children = append(n.children, c)
 	}
 }
 
-func (n Node) GetChildren() []*Node {
+func (n Node) getChildren() []*Node {
 	return n.children
 }
 
@@ -180,25 +180,39 @@ type MegaFS struct {
 	sroots []*Node
 	lookup map[string]*Node
 	skmap  map[string]string
+	mutex  sync.Mutex
 }
 
 // Get filesystem root node
 func (fs MegaFS) GetRoot() *Node {
+	fs.mutex.Lock()
+	defer fs.mutex.Unlock()
 	return fs.root
 }
 
 // Get filesystem trash node
 func (fs MegaFS) GetTrash() *Node {
+	fs.mutex.Lock()
+	defer fs.mutex.Unlock()
 	return fs.trash
 }
 
 // Get inbox node
 func (fs MegaFS) GetInbox() *Node {
+	fs.mutex.Lock()
+	defer fs.mutex.Unlock()
 	return fs.inbox
 }
 
 // Get a node pointer from its hash
 func (fs MegaFS) HashLookup(h string) *Node {
+	fs.mutex.Lock()
+	defer fs.mutex.Unlock()
+
+	return fs.hashLookup(h)
+}
+
+func (fs MegaFS) hashLookup(h string) *Node {
 	if node, ok := fs.lookup[h]; ok {
 		return node
 	}
@@ -206,10 +220,32 @@ func (fs MegaFS) HashLookup(h string) *Node {
 	return nil
 }
 
+// Get the list of child nodes for a given node
+func (fs MegaFS) GetChildren(n *Node) ([]*Node, error) {
+	fs.mutex.Lock()
+	defer fs.mutex.Unlock()
+
+	var empty []*Node
+
+	if n == nil {
+		return empty, EARGS
+	}
+
+	node := fs.hashLookup(n.hash)
+	if node == nil {
+		return empty, ENOENT
+	}
+
+	return node.getChildren(), nil
+}
+
 // Retreive all the nodes in the given node tree path by name
 // This method returns array of nodes upto the matched subpath
 // (in same order as input names array) even if the target node is not located.
 func (fs MegaFS) PathLookup(root *Node, ns []string) ([]*Node, error) {
+	fs.mutex.Lock()
+	defer fs.mutex.Unlock()
+
 	if root == nil {
 		return nil, EARGS
 	}
@@ -245,6 +281,8 @@ func (fs MegaFS) PathLookup(root *Node, ns []string) ([]*Node, error) {
 
 // Get top level directory nodes shared by other users
 func (fs MegaFS) GetSharedRoots() []*Node {
+	fs.mutex.Lock()
+	defer fs.mutex.Unlock()
 	return fs.sroots
 }
 
@@ -318,7 +356,7 @@ func (m *Mega) api_request(r []byte) ([]byte, error) {
 			}
 			err = parseError(emsg[0])
 			if err == EAGAIN {
-				time.Sleep(time.Millisecond*time.Duration(10))
+				time.Sleep(time.Millisecond * time.Duration(10))
 				continue
 			}
 
@@ -388,7 +426,7 @@ func (m Mega) GetUser() (UserResp, error) {
 }
 
 // Add a node into filesystem
-func (m *Mega) AddFSNode(itm FSNode) (*Node, error) {
+func (m *Mega) addFSNode(itm FSNode) (*Node, error) {
 	var compkey, key []uint32
 	var attr FileAttr
 	var node, parent *Node
@@ -459,7 +497,7 @@ func (m *Mega) AddFSNode(itm FSNode) (*Node, error) {
 	switch {
 	case ok:
 		parent = n
-		parent.AddChild(node)
+		parent.addChild(node)
 	default:
 		parent = nil
 		if itm.Parent != "" {
@@ -510,6 +548,9 @@ func (m *Mega) AddFSNode(itm FSNode) (*Node, error) {
 
 // Get all nodes from filesystem
 func (m *Mega) GetFileSystem() error {
+	m.FS.mutex.Lock()
+	defer m.FS.mutex.Unlock()
+
 	var msg [1]FilesMsg
 	var res [1]FilesResp
 
@@ -533,7 +574,7 @@ func (m *Mega) GetFileSystem() error {
 	}
 
 	for _, itm := range res[0].F {
-		m.AddFSNode(itm)
+		m.addFSNode(itm)
 	}
 
 	return nil
@@ -541,6 +582,9 @@ func (m *Mega) GetFileSystem() error {
 
 // Download file from filesystem
 func (m Mega) DownloadFile(src *Node, dstpath string, progress *chan int) error {
+	m.FS.mutex.Lock()
+	defer m.FS.mutex.Unlock()
+
 	defer func() {
 		if progress != nil {
 			close(*progress)
@@ -721,6 +765,9 @@ func (m Mega) DownloadFile(src *Node, dstpath string, progress *chan int) error 
 
 // Upload a file to the filesystem
 func (m Mega) UploadFile(srcpath string, parent *Node, name string, progress *chan int) (*Node, error) {
+	m.FS.mutex.Lock()
+	defer m.FS.mutex.Unlock()
+
 	defer func() {
 		if progress != nil {
 			close(*progress)
@@ -940,13 +987,16 @@ func (m Mega) UploadFile(srcpath string, parent *Node, name string, progress *ch
 	if err != nil {
 		return nil, err
 	}
-	node, err := m.AddFSNode(cres[0].F[0])
+	node, err := m.addFSNode(cres[0].F[0])
 
 	return node, err
 }
 
 // Move a file from one location to another
 func (m Mega) Move(src *Node, parent *Node) error {
+	m.FS.mutex.Lock()
+	defer m.FS.mutex.Unlock()
+
 	if src == nil || parent == nil {
 		return EARGS
 	}
@@ -965,8 +1015,8 @@ func (m Mega) Move(src *Node, parent *Node) error {
 	}
 
 	if node, ok := m.FS.lookup[src.parent.hash]; ok {
-		node.RemoveChild(node)
-		parent.AddChild(src)
+		node.removeChild(node)
+		parent.addChild(src)
 		src.parent = parent
 	}
 
@@ -975,6 +1025,9 @@ func (m Mega) Move(src *Node, parent *Node) error {
 
 // Rename a file or folder
 func (m Mega) Rename(src *Node, name string) error {
+	m.FS.mutex.Lock()
+	defer m.FS.mutex.Unlock()
+
 	if src == nil {
 		return EARGS
 	}
@@ -1000,6 +1053,9 @@ func (m Mega) Rename(src *Node, name string) error {
 
 // Create a directory in the filesystem
 func (m Mega) CreateDir(name string, parent *Node) (*Node, error) {
+	m.FS.mutex.Lock()
+	defer m.FS.mutex.Unlock()
+
 	if parent == nil {
 		return nil, EARGS
 	}
@@ -1037,13 +1093,16 @@ func (m Mega) CreateDir(name string, parent *Node) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	node, err := m.AddFSNode(res[0].F[0])
+	node, err := m.addFSNode(res[0].F[0])
 
 	return node, err
 }
 
 // Delete a file or directory from filesystem
 func (m Mega) Delete(node *Node, destroy bool) error {
+	m.FS.mutex.Lock()
+	defer m.FS.mutex.Unlock()
+
 	if node == nil {
 		return EARGS
 	}
@@ -1061,7 +1120,7 @@ func (m Mega) Delete(node *Node, destroy bool) error {
 	_, err := m.api_request(req)
 
 	parent := m.FS.lookup[node.hash]
-	parent.RemoveChild(node)
+	parent.removeChild(node)
 	delete(m.FS.lookup, node.hash)
 
 	return err
