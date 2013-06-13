@@ -7,7 +7,6 @@ import (
 	"io/ioutil"
 	"os"
 	"path"
-	"time"
 	"testing"
 )
 
@@ -283,23 +282,45 @@ func TestPathLookup(t *testing.T) {
 func TestEventNotify(t *testing.T) {
 	session1 := initSession()
 	session2 := initSession()
+	var node *Node
+
+	waitch1 := make(chan bool, 1)
+	waitch2 := make(chan bool, 1)
 
 	name, _ := createFile(31)
-	node, _ := session1.UploadFile(name, session1.FS.root, "", nil)
+
+	evcb1 := &eventCallback{
+		ch:     waitch1,
+		evname: "d",
+	}
+
+	evcb2 := &eventCallback{
+		ch:     waitch2,
+		evname: "t",
+	}
+
+	session1.em.RegisterCallback(evcb1)
+	session2.em.RegisterCallback(evcb2)
+
+	node, _ = session1.UploadFile(name, session1.FS.root, "", nil)
 	os.Remove(name)
 
-	time.Sleep(time.Second*5)
+	// Wait for file create event on second client
+	<-waitch2
+
 	node = session2.FS.HashLookup(node.hash)
 	if node == nil {
 		t.Fatal("Expects file to found in second client's FS")
 	}
 
+	// Wait for file create event on second client
 	err := session2.Delete(node, true)
 	if err != nil {
 		t.Fatal("Delete failed", err)
 	}
 
-	time.Sleep(time.Second*5)
+	<-waitch1
+
 	node = session1.FS.HashLookup(node.hash)
 	if node != nil {
 		t.Fatal("Expects file to not-found in first client's FS")

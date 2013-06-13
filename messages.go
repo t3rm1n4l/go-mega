@@ -142,7 +142,7 @@ type FileDeleteMsg struct {
 	I   string `json:"i"`
 }
 
-type Event struct {
+type EventMsg struct {
 	Cmd string `json:"a"`
 	/*
 		// Delete (a=d)
@@ -165,8 +165,8 @@ type Event struct {
 	I    string `json:"i"`
 }
 
-type EventMsg struct {
-	W  string  `json:"w"`
-	Sn string  `json:"sn"`
-	E  []Event `json:"a"`
+type EventContainerMsg struct {
+	W  string     `json:"w"`
+	Sn string     `json:"sn"`
+	E  []EventMsg `json:"a"`
 }

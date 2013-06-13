@@ -305,3 +305,18 @@ func randString(l int) string {
 	d = d[:l]
 	return string(d)
 }
+
+// Wait until event notification receiver gets the event
+func waitForEvent(m *Mega, id string) {
+	waitch := make(chan bool, 1)
+	evcb := &eventCallback{
+		id:   id,
+		ch:   waitch,
+		once: true,
+	}
+
+	m.em.RegisterCallback(evcb)
+	m.FS.mutex.Unlock()
+	<-waitch
+	m.FS.mutex.Lock()
+}

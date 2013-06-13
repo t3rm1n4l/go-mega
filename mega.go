@@ -89,6 +89,79 @@ func (c *config) SetUploadWorkers(w int) error {
 	return EWORKER_LIMIT_EXCEEDED
 }
 
+// Callback for publish-subscribe
+type eventCallback struct {
+	id     string
+	evname string
+	hash   string
+	ch     chan bool
+	once   bool
+}
+
+// Publish-Subscribe manager
+type eventManager struct {
+	mutex     sync.Mutex
+	listeners []*eventCallback
+}
+
+func (em *eventManager) RegisterCallback(ev *eventCallback) bool {
+	em.mutex.Lock()
+	defer em.mutex.Unlock()
+
+	if ev.id == "" && ev.evname == "" && ev.hash == "" {
+		return false
+	}
+
+	em.listeners = append(em.listeners, ev)
+
+	return true
+}
+
+func (em *eventManager) UnregisterCallback(ev *eventCallback) bool {
+	em.mutex.Lock()
+	defer em.mutex.Unlock()
+
+	return em.unregisterCallback(ev)
+}
+
+func (em *eventManager) unregisterCallback(ev *eventCallback) bool {
+	index := -1
+	for i, v := range em.listeners {
+		if ev == v {
+			index = i
+			break
+		}
+	}
+
+	if index > -1 {
+		em.listeners[index] = em.listeners[len(em.listeners)-1]
+		em.listeners = em.listeners[:len(em.listeners)-1]
+		return true
+	}
+
+	return false
+}
+
+func (em *eventManager) NotifyEvent(id, ev, hash string) {
+	em.mutex.Lock()
+	defer em.mutex.Unlock()
+
+	listeners := em.listeners
+
+	for _, v := range listeners {
+		callback := *v
+		if (callback.evname == "" || callback.evname == ev) &&
+			(callback.hash == "" || callback.hash == hash) &&
+			(callback.id == "" || callback.id == id) {
+
+			callback.ch <- true
+			if callback.once == true {
+				em.unregisterCallback(v)
+			}
+		}
+	}
+}
+
 type Mega struct {
 	config
 	// Sequence number
@@ -103,6 +176,8 @@ type Mega struct {
 	uh []byte
 	// Filesystem object
 	FS *MegaFS
+	// Event notifier
+	em eventManager
 }
 
 // Filesystem node types
@@ -992,6 +1067,7 @@ func (m *Mega) UploadFile(srcpath string, parent *Node, name string, progress *c
 	cmsg[0].N[0].T = FILE
 	cmsg[0].N[0].A = string(attr_data)
 	cmsg[0].N[0].K = string(base64urlencode(buf))
+	cmsg[0].I = randString(10)
 
 	request, _ = json.Marshal(cmsg)
 	result, err = m.api_request(request)
@@ -1123,8 +1199,7 @@ func (m *Mega) Delete(node *Node, destroy bool) error {
 		return EARGS
 	}
 	if destroy == false {
-		m.Move(node, m.FS.trash)
-		return nil
+		return m.Move(node, m.FS.trash)
 	}
 
 	m.FS.mutex.Lock()
@@ -1150,7 +1225,7 @@ func (m *Mega) pollEvents() {
 	var b []byte
 
 	for {
-		var events EventMsg
+		var events EventContainerMsg
 		url := fmt.Sprintf("%s/sc?sn=%s&sid=%s", m.baseurl, m.ssn, string(m.sid))
 		resp, err := client.Post(url, "application/xml", bytes.NewBuffer(b))
 		if err != nil {
@@ -1206,7 +1281,9 @@ func (m *Mega) pollEvents() {
 				case ev.Cmd == "t":
 					for _, itm := range ev.T.Files {
 						m.addFSNode(itm)
+						m.em.NotifyEvent(ev.I, ev.Cmd, itm.Hash)
 					}
+
 				case ev.Cmd == "u":
 					node := m.FS.hashLookup(ev.N)
 					attr, err := decryptAttr(node.meta.key, []byte(ev.Attr))
@@ -1215,14 +1292,16 @@ func (m *Mega) pollEvents() {
 					} else {
 						node.name = "BAD ATTRIBUTE"
 					}
-
 					node.ts = time.Unix(ev.Ts, 0)
+					m.em.NotifyEvent(ev.I, ev.Cmd, ev.N)
+
 				case ev.Cmd == "d":
 					node := m.FS.hashLookup(ev.N)
 					if node != nil && node.parent != nil {
 						node.parent.removeChild(node)
 						delete(m.FS.lookup, node.hash)
 					}
+					m.em.NotifyEvent(ev.I, ev.Cmd, ev.N)
 					/*TODO: Handle all events
 					default:
 						panic("Unknown event")
