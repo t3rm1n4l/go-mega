@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"os"
 	"path"
+	"time"
 	"testing"
 )
 
@@ -276,5 +277,31 @@ func TestPathLookup(t *testing.T) {
 				arr = append(arr, tst[n])
 			}
 		}
+	}
+}
+
+func TestEventNotify(t *testing.T) {
+	session1 := initSession()
+	session2 := initSession()
+
+	name, _ := createFile(31)
+	node, _ := session1.UploadFile(name, session1.FS.root, "", nil)
+	os.Remove(name)
+
+	time.Sleep(time.Second*5)
+	node = session2.FS.HashLookup(node.hash)
+	if node == nil {
+		t.Fatal("Expects file to found in second client's FS")
+	}
+
+	err := session2.Delete(node, true)
+	if err != nil {
+		t.Fatal("Delete failed", err)
+	}
+
+	time.Sleep(time.Second*5)
+	node = session1.FS.HashLookup(node.hash)
+	if node != nil {
+		t.Fatal("Expects file to not-found in first client's FS")
 	}
 }
