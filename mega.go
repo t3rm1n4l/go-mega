@@ -24,7 +24,7 @@ var client *http.Client
 
 // Default settings
 const (
-	API_URL              = "https://eu.api.mega.co.nz/cs"
+	API_URL              = "https://eu.api.mega.co.nz"
 	RETRIES              = 10
 	DOWNLOAD_WORKERS     = 3
 	MAX_DOWNLOAD_WORKERS = 6
@@ -53,6 +53,9 @@ func newConfig() config {
 
 // Set mega service base url
 func (c *config) SetAPIUrl(u string) {
+	if strings.HasSuffix(u, "/") {
+		u = strings.TrimRight(u, "/")
+	}
 	c.baseurl = u
 }
 
@@ -90,6 +93,8 @@ type Mega struct {
 	config
 	// Sequence number
 	sn int64
+	// Server state sn
+	ssn string
 	// Session ID
 	sid []byte
 	// Master key
@@ -124,7 +129,7 @@ type Node struct {
 func (n *Node) removeChild(c *Node) bool {
 	index := -1
 	for i, v := range n.children {
-		if v == c {
+		if v.hash == c.hash {
 			index = i
 			break
 		}
@@ -318,7 +323,7 @@ func (m *Mega) api_request(r []byte) ([]byte, error) {
 		m.sn++
 	}()
 
-	url := fmt.Sprintf("%s?id=%d", m.baseurl, m.sn)
+	url := fmt.Sprintf("%s/cs?id=%d", m.baseurl, m.sn)
 
 	if m.sid != nil {
 		url = fmt.Sprintf("%s&sid=%s", url, string(m.sid))
@@ -404,6 +409,12 @@ func (m *Mega) Login(email string, passwd string) error {
 	cipher.Decrypt(m.k, m.k)
 	m.sid = decryptSessionId([]byte(res[0].Privk), []byte(res[0].Csid), m.k)
 
+	if err != nil {
+		return err
+	}
+
+	err = m.getFileSystem()
+
 	return err
 }
 
@@ -475,7 +486,7 @@ func (m *Mega) addFSNode(itm FSNode) (*Node, error) {
 		attr, err = decryptAttr(a32_to_bytes(key), []byte(itm.Attr))
 		// FIXME:
 		if err != nil {
-			attr.Name = "UNKNOWN"
+			attr.Name = "BAD ATTRIBUTE"
 		}
 	}
 
@@ -497,6 +508,7 @@ func (m *Mega) addFSNode(itm FSNode) (*Node, error) {
 	switch {
 	case ok:
 		parent = n
+		parent.removeChild(node)
 		parent.addChild(node)
 	default:
 		parent = nil
@@ -547,7 +559,7 @@ func (m *Mega) addFSNode(itm FSNode) (*Node, error) {
 }
 
 // Get all nodes from filesystem
-func (m *Mega) GetFileSystem() error {
+func (m *Mega) getFileSystem() error {
 	m.FS.mutex.Lock()
 	defer m.FS.mutex.Unlock()
 
@@ -576,6 +588,10 @@ func (m *Mega) GetFileSystem() error {
 	for _, itm := range res[0].F {
 		m.addFSNode(itm)
 	}
+
+	m.ssn = res[0].Sn
+
+	go m.pollEvents()
 
 	return nil
 }
@@ -764,7 +780,7 @@ func (m Mega) DownloadFile(src *Node, dstpath string, progress *chan int) error 
 }
 
 // Upload a file to the filesystem
-func (m Mega) UploadFile(srcpath string, parent *Node, name string, progress *chan int) (*Node, error) {
+func (m *Mega) UploadFile(srcpath string, parent *Node, name string, progress *chan int) (*Node, error) {
 	m.FS.mutex.Lock()
 	defer m.FS.mutex.Unlock()
 
@@ -993,7 +1009,7 @@ func (m Mega) UploadFile(srcpath string, parent *Node, name string, progress *ch
 }
 
 // Move a file from one location to another
-func (m Mega) Move(src *Node, parent *Node) error {
+func (m *Mega) Move(src *Node, parent *Node) error {
 	m.FS.mutex.Lock()
 	defer m.FS.mutex.Unlock()
 
@@ -1014,17 +1030,18 @@ func (m Mega) Move(src *Node, parent *Node) error {
 		return err
 	}
 
-	if node, ok := m.FS.lookup[src.parent.hash]; ok {
-		node.removeChild(node)
-		parent.addChild(src)
-		src.parent = parent
+	if src.parent != nil {
+		src.parent.removeChild(src)
 	}
+
+	parent.addChild(src)
+	src.parent = parent
 
 	return nil
 }
 
 // Rename a file or folder
-func (m Mega) Rename(src *Node, name string) error {
+func (m *Mega) Rename(src *Node, name string) error {
 	m.FS.mutex.Lock()
 	defer m.FS.mutex.Unlock()
 
@@ -1048,11 +1065,13 @@ func (m Mega) Rename(src *Node, name string) error {
 	req, _ := json.Marshal(msg)
 	_, err := m.api_request(req)
 
+	src.name = name
+
 	return err
 }
 
 // Create a directory in the filesystem
-func (m Mega) CreateDir(name string, parent *Node) (*Node, error) {
+func (m *Mega) CreateDir(name string, parent *Node) (*Node, error) {
 	m.FS.mutex.Lock()
 	defer m.FS.mutex.Unlock()
 
@@ -1099,10 +1118,7 @@ func (m Mega) CreateDir(name string, parent *Node) (*Node, error) {
 }
 
 // Delete a file or directory from filesystem
-func (m Mega) Delete(node *Node, destroy bool) error {
-	m.FS.mutex.Lock()
-	defer m.FS.mutex.Unlock()
-
+func (m *Mega) Delete(node *Node, destroy bool) error {
 	if node == nil {
 		return EARGS
 	}
@@ -1110,6 +1126,9 @@ func (m Mega) Delete(node *Node, destroy bool) error {
 		m.Move(node, m.FS.trash)
 		return nil
 	}
+
+	m.FS.mutex.Lock()
+	defer m.FS.mutex.Unlock()
 
 	var msg [1]FileDeleteMsg
 	msg[0].Cmd = "d"
@@ -1124,4 +1143,94 @@ func (m Mega) Delete(node *Node, destroy bool) error {
 	delete(m.FS.lookup, node.hash)
 
 	return err
+}
+
+// Listen for server event notifications and play actions
+func (m *Mega) pollEvents() {
+	var b []byte
+
+	for {
+		var events EventMsg
+		url := fmt.Sprintf("%s/sc?sn=%s&sid=%s", m.baseurl, m.ssn, string(m.sid))
+		resp, err := client.Post(url, "application/xml", bytes.NewBuffer(b))
+		if err != nil {
+			time.Sleep(time.Millisecond * 10)
+			continue
+		}
+		buf, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			time.Sleep(time.Millisecond * 10)
+			continue
+		}
+
+		if bytes.HasPrefix(buf, []byte("{")) == false && bytes.HasPrefix(buf, []byte("-")) == false {
+			panic("Bad response received from server - " + string(buf))
+		}
+
+		if len(buf) < 6 {
+			var emsg [1]ErrorMsg
+			err = json.Unmarshal(buf, &emsg)
+			if err != nil {
+				err = json.Unmarshal(buf, &emsg[0])
+			}
+			if err != nil {
+				panic("Bad response received from server - " + string(buf))
+			}
+			err = parseError(emsg[0])
+			if err == EAGAIN {
+				time.Sleep(time.Millisecond * time.Duration(10))
+				continue
+			}
+
+			if err != nil {
+				panic(fmt.Sprintf("Bad response received from server - %s", err))
+			}
+		}
+
+		resp.Body.Close()
+		err = json.Unmarshal(buf, &events)
+		if err != nil {
+			panic("Bad response received from server - " + string(buf))
+		}
+
+		if events.W != "" {
+			_, err := client.Get(events.W)
+			if err != nil {
+				time.Sleep(time.Millisecond * 10)
+				continue
+			}
+		} else {
+			m.FS.mutex.Lock()
+			for _, ev := range events.E {
+				switch {
+				case ev.Cmd == "t":
+					for _, itm := range ev.T.Files {
+						m.addFSNode(itm)
+					}
+				case ev.Cmd == "u":
+					node := m.FS.hashLookup(ev.N)
+					attr, err := decryptAttr(node.meta.key, []byte(ev.Attr))
+					if err == nil {
+						node.name = attr.Name
+					} else {
+						node.name = "BAD ATTRIBUTE"
+					}
+
+					node.ts = time.Unix(ev.Ts, 0)
+				case ev.Cmd == "d":
+					node := m.FS.hashLookup(ev.N)
+					if node != nil && node.parent != nil {
+						node.parent.removeChild(node)
+						delete(m.FS.lookup, node.hash)
+					}
+					/*TODO: Handle all events
+					default:
+						panic("Unknown event")
+					*/
+				}
+			}
+			m.ssn = events.Sn
+			m.FS.mutex.Unlock()
+		}
+	}
 }

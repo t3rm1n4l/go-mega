@@ -141,3 +141,32 @@ type FileDeleteMsg struct {
 	N   string `json:"n"`
 	I   string `json:"i"`
 }
+
+type Event struct {
+	Cmd string `json:"a"`
+	/*
+		// Delete (a=d)
+		delEvent
+		// Update attr (a=u)
+		updateEvent
+		// New nodes (a=t)
+		createEvent
+	*/
+	T struct {
+		Files []FSNode `json:"f"`
+	} `json:"t"`
+	Owner string `json:"ou"`
+
+	N    string `json:"n"`
+	User string `json:"u"`
+	Attr string `json:"at"`
+	Key  string `json:"k"`
+	Ts   int64  `json:"ts"`
+	I    string `json:"i"`
+}
+
+type EventMsg struct {
+	W  string  `json:"w"`
+	Sn string  `json:"sn"`
+	E  []Event `json:"a"`
+}

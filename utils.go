@@ -250,8 +250,11 @@ func getChunkSizes(size int) map[int]int {
 	return chunks
 }
 
-func decryptAttr(key []byte, data []byte) (FileAttr, error) {
-	var attr FileAttr
+func decryptAttr(key []byte, data []byte) (attr FileAttr, err error) {
+	err = EBADATTR
+	defer func() {
+		recover()
+	}()
 	block, _ := aes.NewCipher(key)
 	iv := a32_to_bytes([]uint32{0, 0, 0, 0})
 	mode := cipher.NewCBCDecrypter(block, iv)
@@ -260,13 +263,16 @@ func decryptAttr(key []byte, data []byte) (FileAttr, error) {
 
 	if string(buf[:4]) == "MEGA" {
 		str := strings.TrimRight(string(buf[4:]), "\x00")
-		json.Unmarshal([]byte(str), &attr)
+		err = json.Unmarshal([]byte(str), &attr)
 	}
-
-	return attr, nil
+	return
 }
 
-func encryptAttr(key []byte, attr FileAttr) ([]byte, error) {
+func encryptAttr(key []byte, attr FileAttr) (b []byte, err error) {
+	err = EBADATTR
+	defer func() {
+		recover()
+	}()
 	block, _ := aes.NewCipher(key)
 	data, _ := json.Marshal(attr)
 	attrib := []byte("MEGA")
@@ -284,7 +290,9 @@ func encryptAttr(key []byte, attr FileAttr) ([]byte, error) {
 	mode := cipher.NewCBCEncrypter(block, iv)
 	mode.CryptBlocks(attrib, attrib)
 
-	return base64urlencode(attrib), nil
+	b = base64urlencode(attrib)
+	err = nil
+	return
 }
 
 func randString(l int) string {

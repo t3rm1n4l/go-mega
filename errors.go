@@ -30,6 +30,7 @@ var (
 	EOVERQUOTA   = errors.New("Request over quota")
 	ETEMPUNAVAIL = errors.New("Resource temporarily not available, please try again later")
 	EMACMISMATCH = errors.New("MAC verification failed")
+	EBADATTR     = errors.New("Bad node attribute")
 
 	// Config errors
 	EWORKER_LIMIT_EXCEEDED = errors.New("Maximum worker limit exceeded")
