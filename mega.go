@@ -1183,7 +1183,7 @@ func (m *Mega) pollEvents() {
 			}
 
 			if err != nil {
-				panic(fmt.Sprintf("Bad response received from server - %s", err))
+				panic("Bad response received from server - %s" + err.Error())
 			}
 		}
 
