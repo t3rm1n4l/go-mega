@@ -28,6 +28,7 @@ func newHttpClient(timeout time.Duration) *http.Client {
 				}
 				return c, nil
 			},
+			Proxy: http.ProxyFromEnvironment,
 		},
 	}
 	return c
