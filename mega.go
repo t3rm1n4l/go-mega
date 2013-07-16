@@ -170,6 +170,10 @@ func (n Node) GetName() string {
 	return n.name
 }
 
+func (n Node) GetHash() string {
+	return n.hash
+}
+
 type NodeMeta struct {
 	key     []byte
 	compkey []byte
