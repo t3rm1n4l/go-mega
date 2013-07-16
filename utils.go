@@ -59,8 +59,14 @@ func base64urlencode(b []byte) []byte {
 	encSize := enc.EncodedLen(len(b))
 	buf := make([]byte, encSize)
 	enc.Encode(buf, b)
-	encSize -= 3 - len(b)%3
-	return buf[:encSize]
+
+	paddSize := 3 - len(b)%3
+	if paddSize < 3 {
+		encSize -= paddSize
+		buf =  buf[:encSize]
+	}
+
+	return buf
 }
 
 func base64urldecode(b []byte) []byte {
