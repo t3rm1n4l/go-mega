@@ -27,9 +27,9 @@ const (
 	API_URL              = "https://eu.api.mega.co.nz"
 	RETRIES              = 10
 	DOWNLOAD_WORKERS     = 3
-	MAX_DOWNLOAD_WORKERS = 6
+	MAX_DOWNLOAD_WORKERS = 30
 	UPLOAD_WORKERS       = 1
-	MAX_UPLOAD_WORKERS   = 6
+	MAX_UPLOAD_WORKERS   = 30
 	TIMEOUT              = time.Second * 10
 )
 
