@@ -85,7 +85,7 @@ type DownloadMsg struct {
 
 type DownloadResp struct {
 	G    string `json:"g"`
-	Size uint32 `json:"s"`
+	Size uint64 `json:"s"`
 	Attr string `json:"at"`
 	Err  uint32 `json:"e"`
 }
