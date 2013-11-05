@@ -732,8 +732,10 @@ func (m Mega) DownloadFile(src *Node, dstpath string, progress *chan int) error 
 				}
 
 				mutex.Lock()
-				chunk_macs[id] = make([]byte, 16)
-				copy(chunk_macs[id], block)
+				if len(chunk_macs) > 0 {
+					chunk_macs[id] = make([]byte, 16)
+					copy(chunk_macs[id], block)
+				}
 				mutex.Unlock()
 
 				if progress != nil {
@@ -905,8 +907,10 @@ func (m *Mega) UploadFile(srcpath string, parent *Node, name string, progress *c
 				}
 
 				mutex.Lock()
-				chunk_macs[id] = make([]byte, 16)
-				copy(chunk_macs[id], block)
+				if len(chunk_macs) > 0 {
+					chunk_macs[id] = make([]byte, 16)
+					copy(chunk_macs[id], block)
+				}
 				mutex.Unlock()
 
 				ctr_aes.XORKeyStream(chunk, chunk)
@@ -937,6 +941,16 @@ func (m *Mega) UploadFile(srcpath string, parent *Node, name string, progress *c
 		}()
 	}
 
+	// File size is zero
+	// Tell single worker to request for completion handle
+	if len(chunks) == 0 {
+		sorted_chunks = append(sorted_chunks, 0)
+		chunks[0] = 0
+		workch <- 0
+		close(workch)
+		goto finish
+	}
+
 	// Place chunk download jobs to chan
 	for id := 0; id < len(chunks); {
 		select {
@@ -951,6 +965,8 @@ func (m *Mega) UploadFile(srcpath string, parent *Node, name string, progress *c
 			break
 		}
 	}
+
+finish:
 
 	wg.Wait()
 
