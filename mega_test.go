@@ -7,8 +7,8 @@ import (
 	"io/ioutil"
 	"os"
 	"path"
-	"time"
 	"testing"
+	"time"
 )
 
 var USER string = os.Getenv("MEGA_USER")
@@ -288,7 +288,7 @@ func TestEventNotify(t *testing.T) {
 	node, _ := session1.UploadFile(name, session1.FS.root, "", nil)
 	os.Remove(name)
 
-	time.Sleep(time.Second*5)
+	time.Sleep(time.Second * 5)
 	node = session2.FS.HashLookup(node.hash)
 	if node == nil {
 		t.Fatal("Expects file to found in second client's FS")
@@ -299,7 +299,7 @@ func TestEventNotify(t *testing.T) {
 		t.Fatal("Delete failed", err)
 	}
 
-	time.Sleep(time.Second*5)
+	time.Sleep(time.Second * 5)
 	node = session1.FS.HashLookup(node.hash)
 	if node != nil {
 		t.Fatal("Expects file to not-found in first client's FS")

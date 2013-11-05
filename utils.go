@@ -63,7 +63,7 @@ func base64urlencode(b []byte) []byte {
 	paddSize := 3 - len(b)%3
 	if paddSize < 3 {
 		encSize -= paddSize
-		buf =  buf[:encSize]
+		buf = buf[:encSize]
 	}
 
 	return buf
