@@ -665,7 +665,7 @@ func (m Mega) DownloadFile(src *Node, dstpath string, progress *chan int) error 
 	sort.Ints(sorted_chunks)
 
 	workch := make(chan int)
-	errch := make(chan error, 1)
+	errch := make(chan error, m.dl_workers)
 	wg := sync.WaitGroup{}
 
 	// Fire chunk download workers
@@ -674,22 +674,11 @@ func (m Mega) DownloadFile(src *Node, dstpath string, progress *chan int) error 
 
 		go func() {
 			defer wg.Done()
-			var id int
-			var ok bool
 
-			for {
-				// Wait for work blocked on channel
-				select {
-				case err := <-errch:
-					errch <- err
-					return
-				case id, ok = <-workch:
-					if ok == false {
-						return
-					}
-				}
-
+			// Wait for work blocked on channel
+			for id := range workch {
 				var resource *http.Response
+				var err error
 				mutex.Lock()
 				chk_start := sorted_chunks[id]
 				chk_size := chunks[chk_start]
@@ -746,26 +735,17 @@ func (m Mega) DownloadFile(src *Node, dstpath string, progress *chan int) error 
 	}
 
 	// Place chunk download jobs to chan
-	for id := 0; id < len(chunks); {
+	err = nil
+	for id := 0; id < len(chunks) && err == nil; {
 		select {
 		case workch <- id:
 			id++
-			if id == len(chunks) {
-				close(workch)
-				break
-			}
-		case err := <-errch:
-			errch <- err
-			break
+		case err = <-errch:
 		}
 	}
+	close(workch)
 
 	wg.Wait()
-
-	select {
-	case err = <-errch:
-	default:
-	}
 
 	if err != nil {
 		os.Remove(dstpath)
@@ -859,30 +839,17 @@ func (m *Mega) UploadFile(srcpath string, parent *Node, name string, progress *c
 	sort.Ints(sorted_chunks)
 
 	workch := make(chan int)
-	errch := make(chan error, 1)
+	errch := make(chan error, m.ul_workers)
 	wg := sync.WaitGroup{}
 
-	// Fire chunk download workers
-	for w := 0; w < m.dl_workers; w++ {
+	// Fire chunk upload workers
+	for w := 0; w < m.ul_workers; w++ {
 		wg.Add(1)
 
 		go func() {
 			defer wg.Done()
-			var id int
-			var ok bool
 
-			for {
-				// Wait for work blocked on channel
-				select {
-				case err := <-errch:
-					errch <- err
-					return
-				case id, ok = <-workch:
-					if ok == false {
-						return
-					}
-				}
-
+			for id := range workch {
 				mutex.Lock()
 				chk_start := sorted_chunks[id]
 				chk_size := chunks[chk_start]
@@ -941,39 +908,26 @@ func (m *Mega) UploadFile(srcpath string, parent *Node, name string, progress *c
 		}()
 	}
 
-	// File size is zero
-	// Tell single worker to request for completion handle
+	err = nil
 	if len(chunks) == 0 {
+		// File size is zero
+		// Tell single worker to request for completion handle
 		sorted_chunks = append(sorted_chunks, 0)
 		chunks[0] = 0
 		workch <- 0
-		close(workch)
-		goto finish
-	}
-
-	// Place chunk download jobs to chan
-	for id := 0; id < len(chunks); {
-		select {
-		case workch <- id:
-			id++
-			if id == len(chunks) {
-				close(workch)
-				break
+	} else {
+		// Place chunk download jobs to chan
+		for id := 0; id < len(chunks) && err == nil; {
+			select {
+			case workch <- id:
+				id++
+			case err = <-errch:
 			}
-		case err := <-errch:
-			errch <- err
-			break
 		}
 	}
-
-finish:
+	close(workch)
 
 	wg.Wait()
-
-	select {
-	case err = <-errch:
-	default:
-	}
 
 	if err != nil {
 		return nil, err
