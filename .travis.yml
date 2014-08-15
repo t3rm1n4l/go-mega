@@ -1,11 +1,8 @@
---- 
 script: go test -v ./...
-env: 
-  matrix: 
-    secure: |-
-      mqNnmgBfeco5VKtYyWp/p+bsseTzJfQV7YJnSG3WACP52RUnHvQnmE3Fo5Sw
-      3/8CDczZb7zQ6uqwlMDubaxQpVEskQ0WfbbBNVkNMWTo47wG3OrdFBUY4Hk1
-      Jo+MUk7/ToKXHSP2A+ncZIVWrYhqUzSPslzURn3V62DSIJKk5v0=
-notifications: 
+env:
+  global:
+  - secure: RzsF80V1i69FVJwKSF8WrFzk5bRUKtPxRkhjiLOO0b1usFg0EIY6XFp3s/VTR6oT91LRXml3Bp7wHHrkPvGnHyUyuxj6loj3gIrsX8cZHUtjyQX/Szfi9MOJpbdJvfCcHByEh9YGldAz//9zvEo5oGuI29Luur3cv+BJNJElmHg=
+  - secure: Eu3kWJbxpKyioitPQo75gI3gL/HKEHVMdp6YLxxcmlrbG2xyXdlFhTB2YkkmnC8jNvf7XJWdtYnhlWM9MrNY1fUiRyGSAmpSlzzCa9XQ9lCv0hUH57+D3PAcH6gdgKn6q1iOk26CxOCKAHVaj5xdDMIyCc4mD+sLyTDQhBIHABc=
+notifications:
   email: false
 language: go
