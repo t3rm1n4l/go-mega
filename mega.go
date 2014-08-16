@@ -338,7 +338,10 @@ func (m *Mega) api_request(r []byte) ([]byte, error) {
 		if err == nil {
 			if resp.StatusCode == 200 {
 				goto success
+			} else {
+				resp.Body.Close()
 			}
+
 			err = errors.New("Http Status:" + resp.Status)
 		}
 
@@ -687,7 +690,11 @@ func (m Mega) DownloadFile(src *Node, dstpath string, progress *chan int) error 
 				for retry := 0; retry < m.retries+1; retry++ {
 					resource, err = client.Get(chunk_url)
 					if err == nil {
-						break
+						if resource.StatusCode == 200 {
+							break
+						} else {
+							resource.Body.Close()
+						}
 					}
 				}
 
@@ -880,15 +887,26 @@ func (m *Mega) UploadFile(srcpath string, parent *Node, name string, progress *c
 				}
 				mutex.Unlock()
 
+				var rsp *http.Response
+				var err error
 				ctr_aes.XORKeyStream(chunk, chunk)
 				chk_url := fmt.Sprintf("%s/%d", uploadUrl, chk_start)
 				reader := bytes.NewBuffer(chunk)
 				req, _ := http.NewRequest("POST", chk_url, reader)
-				rsp, err := client.Do(req)
+
 				chunk_resp := []byte{}
-				if err == nil {
-					chunk_resp, err = ioutil.ReadAll(rsp.Body)
+				for retry := 0; retry < m.retries+1; retry++ {
+					rsp, err = client.Do(req)
+					if err == nil {
+						if rsp.StatusCode == 200 {
+							break
+						} else {
+							rsp.Body.Close()
+						}
+					}
 				}
+
+				chunk_resp, err = ioutil.ReadAll(rsp.Body)
 
 				if err != nil {
 					errch <- err
@@ -1131,6 +1149,12 @@ func (m *Mega) pollEvents() {
 			time.Sleep(time.Millisecond * 10)
 			continue
 		}
+
+		if resp.StatusCode != 200 {
+			resp.Body.Close()
+			continue
+		}
+
 		buf, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
 			time.Sleep(time.Millisecond * 10)
@@ -1168,11 +1192,17 @@ func (m *Mega) pollEvents() {
 		}
 
 		if events.W != "" {
-			_, err := client.Get(events.W)
+			rsp, err := client.Get(events.W)
 			if err != nil {
 				time.Sleep(time.Millisecond * 10)
 				continue
 			}
+
+			if rsp.StatusCode != 200 {
+				rsp.Body.Close()
+				continue
+			}
+
 		} else {
 			m.FS.mutex.Lock()
 			for _, ev := range events.E {
