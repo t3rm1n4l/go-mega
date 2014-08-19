@@ -174,7 +174,7 @@ func TestCreateDir(t *testing.T) {
 
 func TestConfig(t *testing.T) {
 	m := New()
-	m.SetAPIUrl("http://example.com")
+	m.SetAPIUrl("http://invalid.domain")
 	err := m.Login(USER, PASSWORD)
 	if err == nil {
 		t.Error("API Url: Expected failure")
@@ -288,7 +288,7 @@ func TestEventNotify(t *testing.T) {
 	node, _ := session1.UploadFile(name, session1.FS.root, "", nil)
 	os.Remove(name)
 
-	time.Sleep(time.Second * 5)
+	time.Sleep(time.Second * 10)
 	node = session2.FS.HashLookup(node.hash)
 	if node == nil {
 		t.Fatal("Expects file to found in second client's FS")
