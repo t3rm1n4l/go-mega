@@ -34,6 +34,8 @@ func newHttpClient(timeout time.Duration) *http.Client {
 	return c
 }
 
+// bytes_to_a32 converts the byte slice b to uint32 slice considering
+// the bytes to be in big endian order.
 func bytes_to_a32(b []byte) []uint32 {
 	length := len(b) + 3
 	a := make([]uint32, length/4)
@@ -45,8 +47,11 @@ func bytes_to_a32(b []byte) []uint32 {
 	return a
 }
 
+// a32_to_bytes converts the uint32 slice a to byte slice where each
+// uint32 is decoded in big endian order.
 func a32_to_bytes(a []uint32) []byte {
 	buf := new(bytes.Buffer)
+	buf.Grow(len(a) * 4) // To prevent reallocations in Write
 	for _, v := range a {
 		binary.Write(buf, binary.BigEndian, v)
 	}
@@ -54,6 +59,8 @@ func a32_to_bytes(a []uint32) []byte {
 	return buf.Bytes()
 }
 
+// base64urlencode encodes byte slice b using base64 url encoding.
+// It removes `=` padding when necessary
 func base64urlencode(b []byte) []byte {
 	enc := base64.URLEncoding
 	encSize := enc.EncodedLen(len(b))
@@ -69,17 +76,17 @@ func base64urlencode(b []byte) []byte {
 	return buf
 }
 
+// base64urldecode decodes the byte slice b using base64 url decoding.
+// It adds required '=' padding before decoding.
 func base64urldecode(b []byte) []byte {
 	enc := base64.URLEncoding
 	padSize := 4 - len(b)%4
 
-	switch {
-	case padSize == 1:
+	switch padSize {
+	case 1:
 		b = append(b, '=')
-		break
-	case padSize == 2:
+	case 2:
 		b = append(b, '=', '=')
-		break
 	}
 
 	decSize := enc.DecodedLen(len(b))
@@ -88,49 +95,61 @@ func base64urldecode(b []byte) []byte {
 	return buf[:n]
 }
 
+// base64_to_a32 converts base64 encoded byte slice b to uint32 slice.
 func base64_to_a32(b []byte) []uint32 {
 	return bytes_to_a32(base64urldecode(b))
 }
 
+// a32_to_base64 converts uint32 slice to base64 encoded byte slice.
 func a32_to_base64(a []uint32) []byte {
 	return base64urlencode(a32_to_bytes(a))
 }
 
+// paddnull pads byte slice b such that the size of resulting byte
+// slice is a multiple of q.
 func paddnull(b []byte, q int) []byte {
-	l := len(b)
-	l = q - l%q
+	if rem := len(b) % q; rem != 0 {
+		l := q - rem
 
-	if l%q == 0 {
-		l = 0
-	}
-
-	for i := 0; i < l; i++ {
-		b = append(b, 0)
+		for i := 0; i < l; i++ {
+			b = append(b, 0)
+		}
 	}
 
 	return b
 }
 
+// password_key calculates password hash from the user password.
 func password_key(p string) []byte {
 	a := bytes_to_a32(paddnull([]byte(p), 4))
+
 	pkey := a32_to_bytes([]uint32{0x93C467E3, 0x7DB0C7A4, 0xD1BE3F81, 0x0152CB56})
 
-	for i := 65536; i > 0; i-- {
-		for j := 0; j < len(a); j += 4 {
-			key := []uint32{0, 0, 0, 0}
-			for k := 0; k < 4; k++ {
-				if j+k < len(a) {
-					key[k] = a[k+j]
-				}
+	n := (len(a) + 3) / 4
+
+	ciphers := make([]cipher.Block, n)
+
+	for j := 0; j < len(a); j += 4 {
+		key := []uint32{0, 0, 0, 0}
+		for k := 0; k < 4; k++ {
+			if j+k < len(a) {
+				key[k] = a[k+j]
 			}
-			cipher, _ := aes.NewCipher(a32_to_bytes(key))
-			cipher.Encrypt(pkey, pkey)
+		}
+		ciphers[j/4], _ = aes.NewCipher(a32_to_bytes(key)) // Uses AES in ECB mode
+	}
+
+	for i := 65536; i > 0; i-- {
+		for j := 0; j < n; j++ {
+			ciphers[j].Encrypt(pkey, pkey)
 		}
 	}
 
 	return pkey
 }
 
+// stringhash computes generic string hash. Uses k as the key for AES
+// cipher.
 func stringhash(s string, k []byte) []byte {
 	a := bytes_to_a32(paddnull([]byte(s), 4))
 	h := []uint32{0, 0, 0, 0}
@@ -148,30 +167,25 @@ func stringhash(s string, k []byte) []byte {
 	return a32_to_base64([]uint32{ha[0], ha[2]})
 }
 
-func getMPILen(b []byte) uint64 {
-	return (uint64(b[0])*256 + uint64(b[1]) + 7) >> 3
-}
-
-func getRSAKey(b []byte) (*big.Int, *big.Int, *big.Int) {
+// getMPI returns the length encoded Int and the next slice.
+func getMPI(b []byte) (*big.Int, []byte) {
 	p := new(big.Int)
-	q := new(big.Int)
-	d := new(big.Int)
-	plen := getMPILen(b)
+	plen := (uint64(b[0])*256 + uint64(b[1]) + 7) >> 3
 	p.SetBytes(b[2 : plen+2])
 	b = b[plen+2:]
+	return p, b
+}
 
-	qlen := getMPILen(b)
-
-	q.SetBytes(b[2 : qlen+2])
-	b = b[qlen+2:]
-
-	dlen := getMPILen(b)
-
-	d.SetBytes(b[2 : dlen+2])
+// getRSAKey decodes the RSA Key from the byte slice b.
+func getRSAKey(b []byte) (*big.Int, *big.Int, *big.Int) {
+	p, b := getMPI(b)
+	q, b := getMPI(b)
+	d, _ := getMPI(b)
 
 	return p, q, d
 }
 
+// decryptRSA decrypts message m using RSA private key (p,q,d)
 func decryptRSA(m, p, q, d *big.Int) []byte {
 	n := new(big.Int)
 	r := new(big.Int)
@@ -181,6 +195,7 @@ func decryptRSA(m, p, q, d *big.Int) []byte {
 	return r.Bytes()
 }
 
+// blockDecrypt decrypts using the block cipher blk in ECB mode.
 func blockDecrypt(blk cipher.Block, dst, src []byte) error {
 
 	if len(src) > len(dst) || len(src)%blk.BlockSize() != 0 {
@@ -196,6 +211,7 @@ func blockDecrypt(blk cipher.Block, dst, src []byte) error {
 	return nil
 }
 
+// blockEncrypt encrypts using the block cipher blk in ECB mode.
 func blockEncrypt(blk cipher.Block, dst, src []byte) error {
 
 	if len(src) > len(dst) || len(src)%blk.BlockSize() != 0 {
@@ -211,6 +227,8 @@ func blockEncrypt(blk cipher.Block, dst, src []byte) error {
 	return nil
 }
 
+// decryptSeessionId decrypts the session id using the given private
+// key.
 func decryptSessionId(privk []byte, csid []byte, mk []byte) []byte {
 
 	block, _ := aes.NewCipher(mk)
@@ -219,11 +237,8 @@ func decryptSessionId(privk []byte, csid []byte, mk []byte) []byte {
 
 	c := base64urldecode(csid)
 
-	l := getMPILen(c)
-	m := new(big.Int)
+	m, _ := getMPI(c)
 
-	padded := c[2 : l+2]
-	m.SetBytes(padded)
 	p, q, d := getRSAKey(pk)
 	r := decryptRSA(m, p, q, d)
 
@@ -233,14 +248,12 @@ func decryptSessionId(privk []byte, csid []byte, mk []byte) []byte {
 
 func getChunkSizes(size int) map[int]int {
 	chunks := make(map[int]int)
-	i := 0
-	p := 0
-	pp := 0
-	for i <= 8 && p < size-i*131072 {
+	p, pp := 0, 0
+	// i = 0 loop is useless
+	for i := 1; i <= 8 && p < size-i*131072; i++ {
 		chunks[p] = i * 131072
 		pp = p
 		p += chunks[p]
-		i++
 	}
 
 	for p < size {
@@ -250,6 +263,8 @@ func getChunkSizes(size int) map[int]int {
 	}
 
 	chunks[pp] = size - pp
+	// Is this even possible? I think pp == size is never possible for
+	// any size > 0.
 	if chunks[pp] == 0 {
 		delete(chunks, pp)
 	}
@@ -284,14 +299,7 @@ func encryptAttr(key []byte, attr FileAttr) (b []byte, err error) {
 	data, _ := json.Marshal(attr)
 	attrib := []byte("MEGA")
 	attrib = append(attrib, data...)
-
-	length := len(attrib)
-	if length%16 != 0 {
-		padding := 16 - length%16
-		for i := 0; i < padding; i++ {
-			attrib = append(attrib, 0)
-		}
-	}
+	attrib = paddnull(attrib, 16)
 
 	iv := a32_to_bytes([]uint32{0, 0, 0, 0})
 	mode := cipher.NewCBCEncrypter(block, iv)
