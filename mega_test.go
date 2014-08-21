@@ -288,8 +288,14 @@ func TestEventNotify(t *testing.T) {
 	node, _ := session1.UploadFile(name, session1.FS.root, "", nil)
 	os.Remove(name)
 
-	time.Sleep(time.Second * 10)
-	node = session2.FS.HashLookup(node.hash)
+	for i := 0; i < 10; i++ {
+		time.Sleep(time.Second * 10)
+		node = session2.FS.HashLookup(node.hash)
+		if node != nil {
+			break
+		}
+	}
+
 	if node == nil {
 		t.Fatal("Expects file to found in second client's FS")
 	}

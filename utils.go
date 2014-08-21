@@ -307,7 +307,7 @@ func randString(l int) string {
 	b := make([]byte, l)
 	rand.Read(b)
 	enc := base64.NewEncoding(encoding)
-	d := make([]byte, enc.EncodedLen(len(b))*2)
+	d := make([]byte, enc.EncodedLen(len(b)))
 	enc.Encode(d, b)
 	d = d[:l]
 	return string(d)
