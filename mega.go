@@ -443,6 +443,25 @@ func (m Mega) GetUser() (UserResp, error) {
 	return res[0], err
 }
 
+// Get quota information
+func (m Mega) GetQuota() (QuotaResp, error) {
+	var msg [1]QuotaMsg
+	var res [1]QuotaResp
+
+	msg[0].Cmd = "uq"
+	msg[0].Xfer = 1
+	msg[0].Strg = 1
+
+	req, _ := json.Marshal(msg)
+	result, err := m.api_request(req)
+	if err != nil {
+		return res[0], err
+	}
+
+	err = json.Unmarshal(result, &res)
+	return res[0], err
+}
+
 // Add a node into filesystem
 func (m *Mega) addFSNode(itm FSNode) (*Node, error) {
 	var compkey, key []uint32
