@@ -25,6 +25,7 @@ var client *http.Client
 // Default settings
 const (
 	API_URL              = "https://eu.api.mega.co.nz"
+	BASE_DOWNLOAD_URL    = "https://mega.co.nz"
 	RETRIES              = 10
 	DOWNLOAD_WORKERS     = 3
 	MAX_DOWNLOAD_WORKERS = 30
@@ -1236,5 +1237,42 @@ func (m *Mega) pollEvents() {
 			m.ssn = events.Sn
 			m.FS.mutex.Unlock()
 		}
+	}
+}
+
+func (m *Mega) getLink(n *Node) (string, error) {
+	m.FS.mutex.Lock()
+	defer m.FS.mutex.Unlock()
+
+	var msg [1]GetLinkMsg
+	var res [1]string
+
+	msg[0].Cmd = "l"
+	msg[0].N = n.hash
+
+	req, _ := json.Marshal(msg)
+	result, err := m.api_request(req)
+
+	if err != nil {
+		return "", err
+	}
+	err = json.Unmarshal(result, &res)
+	if err != nil {
+		return "", err
+	}
+	return res[0], nil
+}
+
+// Exports public link for node, with or without decryption key included
+func (m *Mega) Link(n *Node, includeKey bool) (string, error) {
+	id, err := m.getLink(n);
+	if err != nil {
+		return "", err
+	}
+	if includeKey {
+		key := string(base64urlencode(n.meta.compkey))
+		return fmt.Sprintf("%v/#!%v!%v", BASE_DOWNLOAD_URL, id, key), nil
+	} else {
+		return fmt.Sprintf("%v/#!%v", BASE_DOWNLOAD_URL, id), nil
 	}
 }

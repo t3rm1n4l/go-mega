@@ -311,3 +311,28 @@ func TestEventNotify(t *testing.T) {
 		t.Fatal("Expects file to not-found in first client's FS")
 	}
 }
+
+func TestExportLink(t *testing.T) {
+	session := initSession()
+	name, _ := createFile(31)
+	node, err := session.UploadFile(name, session.FS.root, "", nil)
+	os.Remove(name)
+	if err != nil {
+		t.Fatal("Upload failed", err)
+	}
+	if node == nil {
+		t.Error("Failed to obtain node after upload")
+	}
+
+	// Don't include decryption key
+	_, err = session.Link(node, false);
+	if err != nil {
+		t.Error("Failed to export link (key not included)")
+	}
+
+	// Do include decryption key
+	_, err = session.Link(node, true);
+	if err != nil {
+		t.Error("Failed to export link (key included)")
+	}
+}
