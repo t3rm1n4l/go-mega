@@ -463,7 +463,7 @@ func (m *Mega) addFSNode(itm FSNode) (*Node, error) {
 			buf := base64urldecode([]byte(args[1]))
 			blockDecrypt(master_aes, buf, buf)
 			compkey = bytes_to_a32(buf)
-			// Shared folder
+		// Shared folder
 		case itm.SUser != "" && itm.SKey != "":
 			sk := base64urldecode([]byte(itm.SKey))
 			blockDecrypt(master_aes, sk, sk)
@@ -473,7 +473,7 @@ func (m *Mega) addFSNode(itm FSNode) (*Node, error) {
 			buf := base64urldecode([]byte(args[1]))
 			blockDecrypt(sk_aes, buf, buf)
 			compkey = bytes_to_a32(buf)
-			// Shared file
+		// Shared file
 		default:
 			k := m.FS.skmap[args[0]]
 			b := base64urldecode([]byte(k))
@@ -683,6 +683,7 @@ func (m Mega) DownloadFile(src *Node, dstpath string, progress *chan int) error 
 			for id := range workch {
 				var resource *http.Response
 				var err error
+				var chunk []byte
 				mutex.Lock()
 				chk_start := sorted_chunks[id]
 				chk_size := chunks[chk_start]
@@ -692,30 +693,38 @@ func (m Mega) DownloadFile(src *Node, dstpath string, progress *chan int) error 
 					resource, err = client.Get(chunk_url)
 					if err == nil {
 						if resource.StatusCode == 200 {
-							break
-						} else {
-							resource.Body.Close()
+							// try to read response body
+							chunk, err = ioutil.ReadAll(resource.Body)
+							if err == nil {
+								resource.Body.Close()
+								break
+							}
+							// else try again
 						}
 					}
+					if resource != nil {
+						resource.Body.Close()
+					}
+					// retry in 5 seconds, allow server to recover
+					// TODO: make it possible to configure this by user
+					time.Sleep(time.Second * 5)
 				}
 
 				var ctr_iv []uint32
 				var ctr_aes cipher.Stream
-				var chunk []byte
 
 				if err == nil {
 					ctr_iv = bytes_to_a32(src.meta.iv)
 					ctr_iv[2] = uint32(uint64(chk_start) / 0x1000000000)
 					ctr_iv[3] = uint32(chk_start / 0x10)
 					ctr_aes = cipher.NewCTR(aes_block, a32_to_bytes(ctr_iv))
-					chunk, err = ioutil.ReadAll(resource.Body)
 				}
 
 				if err != nil {
 					errch <- err
 					return
 				}
-				resource.Body.Close()
+
 				ctr_aes.XORKeyStream(chunk, chunk)
 				outfile.WriteAt(chunk, int64(chk_start))
 
@@ -1265,7 +1274,7 @@ func (m *Mega) getLink(n *Node) (string, error) {
 
 // Exports public link for node, with or without decryption key included
 func (m *Mega) Link(n *Node, includeKey bool) (string, error) {
-	id, err := m.getLink(n);
+	id, err := m.getLink(n)
 	if err != nil {
 		return "", err
 	}
