@@ -325,13 +325,13 @@ func TestExportLink(t *testing.T) {
 	}
 
 	// Don't include decryption key
-	_, err = session.Link(node, false);
+	_, err = session.Link(node, false)
 	if err != nil {
 		t.Error("Failed to export link (key not included)")
 	}
 
 	// Do include decryption key
-	_, err = session.Link(node, true);
+	_, err = session.Link(node, true)
 	if err != nil {
 		t.Error("Failed to export link (key included)")
 	}
