@@ -3,6 +3,8 @@ go-mega
 
 A client library in go for mega.co.nz storage service.
 
+This fork fixes a BAD_ATTRIBUTE issue related to file name decrytion
+
 An implementation of command-line utility can be found at [https://github.com/t3rm1n4l/megacmd](https://github.com/t3rm1n4l/megacmd)
 
 [![Build Status](https://secure.travis-ci.org/t3rm1n4l/go-mega.png?branch=master)](http://travis-ci.org/t3rm1n4l/go-mega)
