@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"math/big"
 	mrand "math/rand"
 	"net/http"
@@ -1143,7 +1144,7 @@ func (m *Mega) pollEvents() {
 	var b []byte
 
 	for {
-		var events EventMsg
+		var events Events
 		url := fmt.Sprintf("%s/sc?sn=%s&sid=%s", m.baseurl, m.ssn, string(m.sid))
 		resp, err := client.Post(url, "application/xml", bytes.NewBuffer(b))
 		if err != nil {
@@ -1161,58 +1162,82 @@ func (m *Mega) pollEvents() {
 			time.Sleep(time.Millisecond * 10)
 			continue
 		}
+		resp.Body.Close()
+
+		// Parse an array of
+		err = json.Unmarshal(buf, &events)
+		if err != nil {
+			// Try parsing as a lone error message
+			var emsg ErrorMsg
+			err = json.Unmarshal(buf, &emsg)
+			if err == nil {
+				err = parseError(emsg)
+				if err == EAGAIN {
+					time.Sleep(time.Millisecond * time.Duration(10))
+					continue
+				}
+				log.Printf("Top level error message received %s", buf)
+				if err != nil {
+					panic("Bad response received from server - %s" + err.Error())
+				}
+			}
+			panic("Bad response received from server - " + string(buf))
+		}
 
 		if bytes.HasPrefix(buf, []byte("{")) == false && bytes.HasPrefix(buf, []byte("-")) == false {
 			panic("Bad response received from server - " + string(buf))
 		}
 
-		if len(buf) < 6 {
-			var emsg [1]ErrorMsg
-			err = json.Unmarshal(buf, &emsg)
+		for _, evRaw := range events.E {
+			// First attempt to unmarshal as an error message
+			var emsg ErrorMsg
+			err = json.Unmarshal(evRaw, &emsg)
+			if err == nil {
+				log.Printf("Error message received %s", evRaw)
+				err = parseError(emsg)
+				if err != nil {
+					panic("Bad response received from server - %s" + err.Error())
+				}
+			}
+
+			// Now unmarshal as a generic event
+			var gev GenericEvent
+			err = json.Unmarshal(evRaw, &gev)
 			if err != nil {
-				err = json.Unmarshal(buf, &emsg[0])
+				panic("Bad response event from server: " + string(evRaw) + ": " + err.Error())
 			}
-			if err != nil {
-				panic("Bad response received from server - " + string(buf))
-			}
-			err = parseError(emsg[0])
-			if err == EAGAIN {
-				time.Sleep(time.Millisecond * time.Duration(10))
-				continue
-			}
+			// log.Printf("Parsing command %q: %s", gev.Cmd, evRaw)
 
-			if err != nil {
-				panic("Bad response received from server - %s" + err.Error())
-			}
-		}
+			if events.W != "" {
+				rsp, err := client.Get(events.W)
+				if err != nil {
+					time.Sleep(time.Millisecond * 10)
+					continue
+				}
 
-		resp.Body.Close()
-		err = json.Unmarshal(buf, &events)
-		if err != nil {
-			panic("Bad response received from server - " + string(buf))
-		}
+				if rsp.StatusCode != 200 {
+					rsp.Body.Close()
+					continue
+				}
 
-		if events.W != "" {
-			rsp, err := client.Get(events.W)
-			if err != nil {
-				time.Sleep(time.Millisecond * 10)
-				continue
-			}
-
-			if rsp.StatusCode != 200 {
-				rsp.Body.Close()
-				continue
-			}
-
-		} else {
-			m.FS.mutex.Lock()
-			for _, ev := range events.E {
-				switch {
-				case ev.Cmd == "t":
+			} else {
+				m.FS.mutex.Lock()
+				switch gev.Cmd {
+				case "t": // node addition
+					var ev FSEvent
+					err = json.Unmarshal(evRaw, &ev)
+					if err != nil {
+						panic("Couldn't parse FSEvent: " + string(evRaw) + ": " + err.Error())
+					}
 					for _, itm := range ev.T.Files {
 						m.addFSNode(itm)
 					}
-				case ev.Cmd == "u":
+				case "u": // node update
+					var ev FSEvent
+					err = json.Unmarshal(evRaw, &ev)
+					if err != nil {
+						panic("Couldn't parse FSEvent: " + string(evRaw) + ": " + err.Error())
+					}
 					node := m.FS.hashLookup(ev.N)
 					attr, err := decryptAttr(node.meta.key, []byte(ev.Attr))
 					if err == nil {
@@ -1222,20 +1247,38 @@ func (m *Mega) pollEvents() {
 					}
 
 					node.ts = time.Unix(ev.Ts, 0)
-				case ev.Cmd == "d":
+				case "d": // node deletion
+					var ev FSEvent
+					err = json.Unmarshal(evRaw, &ev)
+					if err != nil {
+						panic("Couldn't parse FSEvent: " + string(evRaw) + ": " + err.Error())
+					}
 					node := m.FS.hashLookup(ev.N)
 					if node != nil && node.parent != nil {
 						node.parent.removeChild(node)
 						delete(m.FS.lookup, node.hash)
 					}
-					/*TODO: Handle all events
-					default:
-						panic("Unknown event")
-					*/
+				case "s", "s2": // share addition/update/revocation
+				case "c": // contact addition/update
+				case "k": // crypto key request
+				case "fa": // file attribute update
+				case "ua": // user attribute update
+				case "psts": // account updated
+				case "ipc": // incoming pending contact request (to us)
+				case "opc": // outgoing pending contact request (from us)
+				case "upci": // incoming pending contact request update (accept/deny/ignore)
+				case "upco": // outgoing pending contact request update (from them, accept/deny/ignore)
+				case "ph": // public links handles
+				case "se": // set email
+				case "mcc": // chat creation / peer's invitation / peer's removal
+				case "mcna": // granted / revoked access to a node
+				case "uac": // user access control
+				default:
+					log.Printf("Unknown message %q received: %s", gev.Cmd, evRaw)
 				}
+				m.ssn = events.Sn
+				m.FS.mutex.Unlock()
 			}
-			m.ssn = events.Sn
-			m.FS.mutex.Unlock()
 		}
 	}
 }
@@ -1265,7 +1308,7 @@ func (m *Mega) getLink(n *Node) (string, error) {
 
 // Exports public link for node, with or without decryption key included
 func (m *Mega) Link(n *Node, includeKey bool) (string, error) {
-	id, err := m.getLink(n);
+	id, err := m.getLink(n)
 	if err != nil {
 		return "", err
 	}

@@ -1,5 +1,7 @@
 package mega
 
+import "encoding/json"
+
 type LoginMsg struct {
 	Cmd    string `json:"a"`
 	User   string `json:"user"`
@@ -142,16 +144,20 @@ type FileDeleteMsg struct {
 	I   string `json:"i"`
 }
 
-type Event struct {
+// GenericEvent is a generic event for parsing the Cmd type before
+// decoding more specifically
+type GenericEvent struct {
 	Cmd string `json:"a"`
-	/*
-		// Delete (a=d)
-		delEvent
-		// Update attr (a=u)
-		updateEvent
-		// New nodes (a=t)
-		createEvent
-	*/
+}
+
+// FSEvent - event for various file system events
+//
+// Delete (a=d)
+// Update attr (a=u)
+// New nodes (a=t)
+type FSEvent struct {
+	Cmd string `json:"a"`
+
 	T struct {
 		Files []FSNode `json:"f"`
 	} `json:"t"`
@@ -165,8 +171,12 @@ type Event struct {
 	I    string `json:"i"`
 }
 
-type EventMsg struct {
-	W  string  `json:"w"`
-	Sn string  `json:"sn"`
-	E  []Event `json:"a"`
+// Events is received from a poll of the server to read the events
+//
+// Each event can be an error message or a different field so we delay
+// decoding
+type Events struct {
+	W  string            `json:"w"`
+	Sn string            `json:"sn"`
+	E  []json.RawMessage `json:"a"`
 }
