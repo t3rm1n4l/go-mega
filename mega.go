@@ -195,35 +195,35 @@ type MegaFS struct {
 }
 
 // Get filesystem root node
-func (fs MegaFS) GetRoot() *Node {
+func (fs *MegaFS) GetRoot() *Node {
 	fs.mutex.Lock()
 	defer fs.mutex.Unlock()
 	return fs.root
 }
 
 // Get filesystem trash node
-func (fs MegaFS) GetTrash() *Node {
+func (fs *MegaFS) GetTrash() *Node {
 	fs.mutex.Lock()
 	defer fs.mutex.Unlock()
 	return fs.trash
 }
 
 // Get inbox node
-func (fs MegaFS) GetInbox() *Node {
+func (fs *MegaFS) GetInbox() *Node {
 	fs.mutex.Lock()
 	defer fs.mutex.Unlock()
 	return fs.inbox
 }
 
 // Get a node pointer from its hash
-func (fs MegaFS) HashLookup(h string) *Node {
+func (fs *MegaFS) HashLookup(h string) *Node {
 	fs.mutex.Lock()
 	defer fs.mutex.Unlock()
 
 	return fs.hashLookup(h)
 }
 
-func (fs MegaFS) hashLookup(h string) *Node {
+func (fs *MegaFS) hashLookup(h string) *Node {
 	if node, ok := fs.lookup[h]; ok {
 		return node
 	}
@@ -232,7 +232,7 @@ func (fs MegaFS) hashLookup(h string) *Node {
 }
 
 // Get the list of child nodes for a given node
-func (fs MegaFS) GetChildren(n *Node) ([]*Node, error) {
+func (fs *MegaFS) GetChildren(n *Node) ([]*Node, error) {
 	fs.mutex.Lock()
 	defer fs.mutex.Unlock()
 
@@ -253,7 +253,7 @@ func (fs MegaFS) GetChildren(n *Node) ([]*Node, error) {
 // Retreive all the nodes in the given node tree path by name
 // This method returns array of nodes upto the matched subpath
 // (in same order as input names array) even if the target node is not located.
-func (fs MegaFS) PathLookup(root *Node, ns []string) ([]*Node, error) {
+func (fs *MegaFS) PathLookup(root *Node, ns []string) ([]*Node, error) {
 	fs.mutex.Lock()
 	defer fs.mutex.Unlock()
 
@@ -291,7 +291,7 @@ func (fs MegaFS) PathLookup(root *Node, ns []string) ([]*Node, error) {
 }
 
 // Get top level directory nodes shared by other users
-func (fs MegaFS) GetSharedRoots() []*Node {
+func (fs *MegaFS) GetSharedRoots() []*Node {
 	fs.mutex.Lock()
 	defer fs.mutex.Unlock()
 	return fs.sroots

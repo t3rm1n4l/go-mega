@@ -27,7 +27,7 @@ type UserResp struct {
 	C     int    `json:"c"`
 	Pubk  string `json:"pubk"`
 	Privk string `json:"privk"`
-	Terms string `json: "terms"`
+	Terms string `json:"terms"`
 	TS    string `json:"ts"`
 }
 
