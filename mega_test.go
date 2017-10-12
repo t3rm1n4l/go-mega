@@ -46,7 +46,10 @@ func initSession(t *testing.T) *Mega {
 // createFile creates a temporary file of a given size along with its MD5SUM
 func createFile(t *testing.T, size int64) (string, string) {
 	b := make([]byte, size)
-	rand.Read(b)
+	_, err := rand.Read(b)
+	if err != nil {
+		t.Fatalf("Error reading rand: %v", err)
+	}
 	file, err := ioutil.TempFile("/tmp/", "gomega-")
 	if err != nil {
 		t.Fatalf("Error creating temp file: %v", err)
@@ -56,7 +59,10 @@ func createFile(t *testing.T, size int64) (string, string) {
 		t.Fatalf("Error writing temp file: %v", err)
 	}
 	h := md5.New()
-	h.Write(b)
+	_, err = h.Write(b)
+	if err != nil {
+		t.Fatalf("Error on Write while writing temp file: %v", err)
+	}
 	return file.Name(), fmt.Sprintf("%x", h.Sum(nil))
 }
 
@@ -98,7 +104,10 @@ func fileMD5(t *testing.T, name string) string {
 		t.Fatalf("Failed to read all %q: %v", name, err)
 	}
 	h := md5.New()
-	h.Write(b)
+	_, err = h.Write(b)
+	if err != nil {
+		t.Fatalf("Error on hash in fileMD5: %v", err)
+	}
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
@@ -134,7 +143,10 @@ func TestUploadDownload(t *testing.T) {
 	}
 
 	h2 := fileMD5(t, name)
-	os.Remove(name)
+	err = os.Remove(name)
+	if err != nil {
+		t.Error("Failed to remove file", err)
+	}
 
 	if h1 != h2 {
 		t.Error("MD5 mismatch for downloaded file")
@@ -231,7 +243,10 @@ func TestConfig(t *testing.T) {
 func TestPathLookup(t *testing.T) {
 	session := initSession(t)
 
-	rs := randString(5)
+	rs, err := randString(5)
+	if err != nil {
+		t.Fatalf("failed to make random string: %v", err)
+	}
 	node1 := createDir(t, session, "dir-1-"+rs, session.FS.root)
 	node21 := createDir(t, session, "dir-2-1-"+rs, node1)
 	node22 := createDir(t, session, "dir-2-2-"+rs, node1)

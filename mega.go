@@ -341,7 +341,7 @@ func (m *Mega) api_request(r []byte) ([]byte, error) {
 			if resp.StatusCode == 200 {
 				goto success
 			} else {
-				resp.Body.Close()
+				_ = resp.Body.Close()
 			}
 
 			err = errors.New("Http Status:" + resp.Status)
@@ -353,7 +353,10 @@ func (m *Mega) api_request(r []byte) ([]byte, error) {
 
 	success:
 		buf, _ = ioutil.ReadAll(resp.Body)
-		resp.Body.Close()
+		err = resp.Body.Close()
+		if err != nil {
+			return nil, err
+		}
 
 		if bytes.HasPrefix(buf, []byte("[")) == false && bytes.HasPrefix(buf, []byte("-")) == false {
 			return nil, EBADRESP
@@ -416,8 +419,7 @@ func (m *Mega) Login(email string, passwd string) error {
 	m.k = base64urldecode([]byte(res[0].Key))
 	cipher, err := aes.NewCipher(passkey)
 	cipher.Decrypt(m.k, m.k)
-	m.sid = decryptSessionId([]byte(res[0].Privk), []byte(res[0].Csid), m.k)
-
+	m.sid, err = decryptSessionId([]byte(res[0].Privk), []byte(res[0].Csid), m.k)
 	if err != nil {
 		return err
 	}
@@ -462,26 +464,41 @@ func (m *Mega) addFSNode(itm FSNode) (*Node, error) {
 		// File or folder owned by current user
 		case args[0] == itm.User:
 			buf := base64urldecode([]byte(args[1]))
-			blockDecrypt(master_aes, buf, buf)
+			err = blockDecrypt(master_aes, buf, buf)
+			if err != nil {
+				return nil, err
+			}
 			compkey = bytes_to_a32(buf)
 			// Shared folder
 		case itm.SUser != "" && itm.SKey != "":
 			sk := base64urldecode([]byte(itm.SKey))
-			blockDecrypt(master_aes, sk, sk)
+			err = blockDecrypt(master_aes, sk, sk)
+			if err != nil {
+				return nil, err
+			}
 			sk_aes, _ := aes.NewCipher(sk)
 
 			m.FS.skmap[itm.Hash] = itm.SKey
 			buf := base64urldecode([]byte(args[1]))
-			blockDecrypt(sk_aes, buf, buf)
+			err = blockDecrypt(sk_aes, buf, buf)
+			if err != nil {
+				return nil, err
+			}
 			compkey = bytes_to_a32(buf)
 			// Shared file
 		default:
 			k := m.FS.skmap[args[0]]
 			b := base64urldecode([]byte(k))
-			blockDecrypt(master_aes, b, b)
+			err = blockDecrypt(master_aes, b, b)
+			if err != nil {
+				return nil, err
+			}
 			block, _ := aes.NewCipher(b)
 			buf := base64urldecode([]byte(args[1]))
-			blockDecrypt(block, buf, buf)
+			err = blockDecrypt(block, buf, buf)
+			if err != nil {
+				return nil, err
+			}
 			compkey = bytes_to_a32(buf)
 		}
 
@@ -595,7 +612,10 @@ func (m *Mega) getFileSystem() error {
 	}
 
 	for _, itm := range res[0].F {
-		m.addFSNode(itm)
+		_, err = m.addFSNode(itm)
+		if err != nil {
+			return err
+		}
 	}
 
 	m.ssn = res[0].Sn
@@ -627,7 +647,10 @@ func (m Mega) DownloadFile(src *Node, dstpath string, progress *chan int) error 
 
 	_, err := os.Stat(dstpath)
 	if os.IsExist(err) {
-		os.Remove(dstpath)
+		err = os.Remove(dstpath)
+		if err != nil {
+			return err
+		}
 	}
 
 	outfile, err = os.OpenFile(dstpath, os.O_RDWR|os.O_CREATE, 0600)
@@ -695,7 +718,7 @@ func (m Mega) DownloadFile(src *Node, dstpath string, progress *chan int) error 
 						if resource.StatusCode == 200 {
 							break
 						} else {
-							resource.Body.Close()
+							_ = resource.Body.Close()
 						}
 					}
 				}
@@ -716,9 +739,18 @@ func (m Mega) DownloadFile(src *Node, dstpath string, progress *chan int) error 
 					errch <- err
 					return
 				}
-				resource.Body.Close()
+				err = resource.Body.Close()
+				if err != nil {
+					errch <- err
+					return
+				}
+
 				ctr_aes.XORKeyStream(chunk, chunk)
-				outfile.WriteAt(chunk, int64(chk_start))
+				_, err = outfile.WriteAt(chunk, int64(chk_start))
+				if err != nil {
+					errch <- err
+					return
+				}
 
 				enc := cipher.NewCBCEncrypter(aes_block, iv)
 				i := 0
@@ -757,7 +789,7 @@ func (m Mega) DownloadFile(src *Node, dstpath string, progress *chan int) error 
 	wg.Wait()
 
 	if err != nil {
-		os.Remove(dstpath)
+		_ = os.Remove(dstpath)
 		return err
 	}
 
@@ -765,7 +797,10 @@ func (m Mega) DownloadFile(src *Node, dstpath string, progress *chan int) error 
 		mac_enc.CryptBlocks(mac_data, v)
 	}
 
-	outfile.Close()
+	err = outfile.Close()
+	if err != nil {
+		return err
+	}
 	tmac := bytes_to_a32(mac_data)
 	if bytes.Equal(a32_to_bytes([]uint32{tmac[0] ^ tmac[1], tmac[2] ^ tmac[3]}), src.meta.mac) == false {
 		return EMACMISMATCH
@@ -903,18 +938,23 @@ func (m *Mega) UploadFile(srcpath string, parent *Node, name string, progress *c
 						if rsp.StatusCode == 200 {
 							break
 						} else {
-							rsp.Body.Close()
+							_ = rsp.Body.Close()
 						}
 					}
 				}
 
 				chunk_resp, err = ioutil.ReadAll(rsp.Body)
-
 				if err != nil {
 					errch <- err
 					return
 				}
-				rsp.Body.Close()
+
+				err = rsp.Body.Close()
+				if err != nil {
+					errch <- err
+					return
+				}
+
 				if bytes.Equal(chunk_resp, nil) == false {
 					mutex.Lock()
 					completion_handle = chunk_resp
@@ -1011,14 +1051,18 @@ func (m *Mega) Move(src *Node, parent *Node) error {
 		return EARGS
 	}
 	var msg [1]MoveFileMsg
+	var err error
 
 	msg[0].Cmd = "m"
 	msg[0].N = src.hash
 	msg[0].T = parent.hash
-	msg[0].I = randString(10)
+	msg[0].I, err = randString(10)
+	if err != nil {
+		return err
+	}
 
 	request, _ := json.Marshal(msg)
-	_, err := m.api_request(request)
+	_, err = m.api_request(request)
 
 	if err != nil {
 		return err
@@ -1048,16 +1092,22 @@ func (m *Mega) Rename(src *Node, name string) error {
 	attr := FileAttr{name}
 	attr_data, _ := encryptAttr(src.meta.key, attr)
 	key := make([]byte, len(src.meta.compkey))
-	blockEncrypt(master_aes, key, src.meta.compkey)
+	err := blockEncrypt(master_aes, key, src.meta.compkey)
+	if err != nil {
+		return err
+	}
 
 	msg[0].Cmd = "a"
 	msg[0].Attr = string(attr_data)
 	msg[0].Key = string(base64urlencode(key))
 	msg[0].N = src.hash
-	msg[0].I = randString(10)
+	msg[0].I, err = randString(10)
+	if err != nil {
+		return err
+	}
 
 	req, _ := json.Marshal(msg)
-	_, err := m.api_request(req)
+	_, err = m.api_request(req)
 
 	src.name = name
 
@@ -1085,7 +1135,10 @@ func (m *Mega) CreateDir(name string, parent *Node) (*Node, error) {
 	ukey := a32_to_bytes(compkey[:4])
 	attr_data, _ := encryptAttr(ukey, attr)
 	key := make([]byte, len(ukey))
-	blockEncrypt(master_aes, key, ukey)
+	err := blockEncrypt(master_aes, key, ukey)
+	if err != nil {
+		return nil, err
+	}
 
 	msg[0].Cmd = "p"
 	msg[0].T = parent.hash
@@ -1093,11 +1146,13 @@ func (m *Mega) CreateDir(name string, parent *Node) (*Node, error) {
 	msg[0].N[0].T = FOLDER
 	msg[0].N[0].A = string(attr_data)
 	msg[0].N[0].K = string(base64urlencode(key))
-	msg[0].I = randString(10)
+	msg[0].I, err = randString(10)
+	if err != nil {
+		return nil, err
+	}
 
 	req, _ := json.Marshal(msg)
 	result, err := m.api_request(req)
-
 	if err != nil {
 		return nil, err
 	}
@@ -1117,20 +1172,23 @@ func (m *Mega) Delete(node *Node, destroy bool) error {
 		return EARGS
 	}
 	if destroy == false {
-		m.Move(node, m.FS.trash)
-		return nil
+		return m.Move(node, m.FS.trash)
 	}
 
 	m.FS.mutex.Lock()
 	defer m.FS.mutex.Unlock()
 
 	var msg [1]FileDeleteMsg
+	var err error
 	msg[0].Cmd = "d"
 	msg[0].N = node.hash
-	msg[0].I = randString(10)
+	msg[0].I, err = randString(10)
+	if err != nil {
+		return err
+	}
 
 	req, _ := json.Marshal(msg)
-	_, err := m.api_request(req)
+	_, err = m.api_request(req)
 
 	parent := m.FS.lookup[node.hash]
 	parent.removeChild(node)
@@ -1151,7 +1209,10 @@ func (m *Mega) processAddNode(evRaw []byte) error {
 	}
 
 	for _, itm := range ev.T.Files {
-		m.addFSNode(itm)
+		_, err = m.addFSNode(itm)
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -1209,7 +1270,7 @@ func (m *Mega) pollEvents() {
 		}
 
 		if resp.StatusCode != 200 {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			continue
 		}
 
@@ -1218,7 +1279,11 @@ func (m *Mega) pollEvents() {
 			time.Sleep(time.Millisecond * 10)
 			continue
 		}
-		resp.Body.Close()
+		err = resp.Body.Close()
+		if err != nil {
+			log.Printf("Error closing body: %v", err)
+			continue
+		}
 
 		// First attempt to parse an array
 		var events Events
@@ -1250,7 +1315,7 @@ func (m *Mega) pollEvents() {
 			if err != nil {
 				time.Sleep(time.Millisecond * 10)
 			} else {
-				rsp.Body.Close()
+				_ = rsp.Body.Close()
 			}
 			continue
 		}
