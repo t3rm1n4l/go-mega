@@ -14,31 +14,89 @@ import (
 var USER string = os.Getenv("MEGA_USER")
 var PASSWORD string = os.Getenv("MEGA_PASSWD")
 
-func initSession() *Mega {
-	m := New()
-	err := m.Login(USER, PASSWORD)
-	if err == nil {
-		return m
+// retry runs fn until it succeeds, using what to log and retrying on
+// EAGAIN.  It uses exponential backoff
+func retry(t *testing.T, what string, fn func() error) {
+	const maxTries = 10
+	var err error
+	sleep := 100 * time.Millisecond
+	for i := 1; i <= maxTries; i++ {
+		err = fn()
+		if err == nil {
+			return
+		}
+		if err != EAGAIN {
+			break
+		}
+		t.Logf("%s failed %d/%d - retrying after %v sleep", what, i, maxTries, sleep)
+		time.Sleep(sleep)
+		sleep *= 2
 	}
-
-	fmt.Println("Unable to initialize session")
-	os.Exit(1)
-	return nil
+	t.Fatalf("%s failed: %v", what, err)
 }
 
-func createFile(size int64) (string, string) {
+func initSession(t *testing.T) *Mega {
+	m := New()
+	retry(t, "Login", func() error {
+		return m.Login(USER, PASSWORD)
+	})
+	return m
+}
+
+// createFile creates a temporary file of a given size along with its MD5SUM
+func createFile(t *testing.T, size int64) (string, string) {
 	b := make([]byte, size)
 	rand.Read(b)
-	file, _ := ioutil.TempFile("/tmp/", "gomega-")
-	file.Write(b)
+	file, err := ioutil.TempFile("/tmp/", "gomega-")
+	if err != nil {
+		t.Fatalf("Error creating temp file: %v", err)
+	}
+	_, err = file.Write(b)
+	if err != nil {
+		t.Fatalf("Error writing temp file: %v", err)
+	}
 	h := md5.New()
 	h.Write(b)
 	return file.Name(), fmt.Sprintf("%x", h.Sum(nil))
 }
 
-func fileMD5(name string) string {
-	file, _ := os.Open(name)
-	b, _ := ioutil.ReadAll(file)
+// uploadFile uploads a temporary file of a given size returning the
+// node, name and its MD5SUM
+func uploadFile(t *testing.T, session *Mega, size int64, parent *Node) (node *Node, name string, md5sum string) {
+	name, md5sum = createFile(t, size)
+	defer func() {
+		_ = os.Remove(name)
+	}()
+	var err error
+	retry(t, fmt.Sprintf("Upload %q", name), func() error {
+		node, err = session.UploadFile(name, parent, "", nil)
+		return err
+	})
+	if node == nil {
+		t.Fatalf("Failed to obtain node after upload for %q", name)
+	}
+	return node, name, md5sum
+}
+
+// createDir creates a directory under parent
+func createDir(t *testing.T, session *Mega, name string, parent *Node) (node *Node) {
+	var err error
+	retry(t, fmt.Sprintf("Create directory %q", name), func() error {
+		node, err = session.CreateDir(name, parent)
+		return err
+	})
+	return node
+}
+
+func fileMD5(t *testing.T, name string) string {
+	file, err := os.Open(name)
+	if err != nil {
+		t.Fatalf("Failed to open %q: %v", name, err)
+	}
+	b, err := ioutil.ReadAll(file)
+	if err != nil {
+		t.Fatalf("Failed to read all %q: %v", name, err)
+	}
 	h := md5.New()
 	h.Write(b)
 	return fmt.Sprintf("%x", h.Sum(nil))
@@ -53,7 +111,7 @@ func TestLogin(t *testing.T) {
 }
 
 func TestGetUser(t *testing.T) {
-	session := initSession()
+	session := initSession(t)
 	_, err := session.GetUser()
 	if err != nil {
 		t.Fatal("GetUser failed", err)
@@ -61,17 +119,8 @@ func TestGetUser(t *testing.T) {
 }
 
 func TestUploadDownload(t *testing.T) {
-	session := initSession()
-	name, h1 := createFile(314573)
-	node, err := session.UploadFile(name, session.FS.root, "", nil)
-	os.Remove(name)
-	if err != nil {
-		t.Fatal("Upload failed", err)
-	}
-
-	if node == nil {
-		t.Error("Failed to obtain node after upload")
-	}
+	session := initSession(t)
+	node, name, h1 := uploadFile(t, session, 314573, session.FS.root)
 
 	phash := session.FS.root.hash
 	n := session.FS.lookup[node.hash]
@@ -79,12 +128,12 @@ func TestUploadDownload(t *testing.T) {
 		t.Error("Parent of uploaded file mismatch")
 	}
 
-	err = session.DownloadFile(node, name, nil)
+	err := session.DownloadFile(node, name, nil)
 	if err != nil {
 		t.Fatal("Download failed", err)
 	}
 
-	h2 := fileMD5(name)
+	h2 := fileMD5(t, name)
 	os.Remove(name)
 
 	if h1 != h2 {
@@ -93,14 +142,12 @@ func TestUploadDownload(t *testing.T) {
 }
 
 func TestMove(t *testing.T) {
-	session := initSession()
-	name, _ := createFile(31)
-	node, err := session.UploadFile(name, session.FS.root, "", nil)
-	os.Remove(name)
+	session := initSession(t)
+	node, _, _ := uploadFile(t, session, 31, session.FS.root)
 
 	hash := node.hash
 	phash := session.FS.trash.hash
-	err = session.Move(node, session.FS.trash)
+	err := session.Move(node, session.FS.trash)
 	if err != nil {
 		t.Fatal("Move failed", err)
 	}
@@ -112,12 +159,10 @@ func TestMove(t *testing.T) {
 }
 
 func TestRename(t *testing.T) {
-	session := initSession()
-	name, _ := createFile(31)
-	node, err := session.UploadFile(name, session.FS.root, "", nil)
-	os.Remove(name)
+	session := initSession(t)
+	node, _, _ := uploadFile(t, session, 31, session.FS.root)
 
-	err = session.Rename(node, "newname.txt")
+	err := session.Rename(node, "newname.txt")
 	if err != nil {
 		t.Fatal("Rename failed", err)
 	}
@@ -129,25 +174,21 @@ func TestRename(t *testing.T) {
 }
 
 func TestDelete(t *testing.T) {
-	session := initSession()
-	name, _ := createFile(31)
-	node, _ := session.UploadFile(name, session.FS.root, "", nil)
-	os.Remove(name)
+	session := initSession(t)
+	node, _, _ := uploadFile(t, session, 31, session.FS.root)
 
-	err := session.Delete(node, false)
-	if err != nil {
-		t.Fatal("Soft delete failed", err)
-	}
+	retry(t, "Soft delete", func() error {
+		return session.Delete(node, false)
+	})
 
 	node = session.FS.lookup[node.hash]
 	if node.parent != session.FS.trash {
 		t.Error("Expects file to be moved to trash")
 	}
 
-	err = session.Delete(node, true)
-	if err != nil {
-		t.Fatal("Hard delete failed", err)
-	}
+	retry(t, "Hard delete", func() error {
+		return session.Delete(node, true)
+	})
 
 	if _, ok := session.FS.lookup[node.hash]; ok {
 		t.Error("Expects file to be dissapeared")
@@ -155,16 +196,9 @@ func TestDelete(t *testing.T) {
 }
 
 func TestCreateDir(t *testing.T) {
-	session := initSession()
-	node, err := session.CreateDir("testdir1", session.FS.root)
-	if err != nil {
-		t.Fatal("Failed to create directory-1", err)
-	}
-
-	node2, err := session.CreateDir("testdir2", node)
-	if err != nil {
-		t.Fatal("Failed to create directory-2", err)
-	}
+	session := initSession(t)
+	node := createDir(t, session, "testdir1", session.FS.root)
+	node2 := createDir(t, session, "testdir2", node)
 
 	nnode2 := session.FS.lookup[node2.hash]
 	if nnode2.parent.hash != node.hash {
@@ -195,58 +229,19 @@ func TestConfig(t *testing.T) {
 }
 
 func TestPathLookup(t *testing.T) {
-	session := initSession()
+	session := initSession(t)
 
 	rs := randString(5)
-	node1, err := session.CreateDir("dir-1-"+rs, session.FS.root)
-	if err != nil {
-		t.Fatal("Failed to create directory-1", err)
-	}
-
-	node21, err := session.CreateDir("dir-2-1-"+rs, node1)
-	if err != nil {
-		t.Fatal("Failed to create directory-2-1", err)
-	}
-
-	node22, err := session.CreateDir("dir-2-2-"+rs, node1)
-	if err != nil {
-		t.Fatal("Failed to create directory-2-2", err)
-	}
-
-	node31, err := session.CreateDir("dir-3-1-"+rs, node21)
-	if err != nil {
-		t.Fatal("Failed to create directory-3-1", err)
-	}
-
-	node32, err := session.CreateDir("dir-3-2-"+rs, node22)
+	node1 := createDir(t, session, "dir-1-"+rs, session.FS.root)
+	node21 := createDir(t, session, "dir-2-1-"+rs, node1)
+	node22 := createDir(t, session, "dir-2-2-"+rs, node1)
+	node31 := createDir(t, session, "dir-3-1-"+rs, node21)
+	node32 := createDir(t, session, "dir-3-2-"+rs, node22)
 	_ = node32
-	if err != nil {
-		t.Fatal("Failed to create directory-3-2", err)
-	}
 
-	name1, _ := createFile(31)
-	_, err = session.UploadFile(name1, node31, "", nil)
-	os.Remove(name1)
-
-	if err != nil {
-		t.Fatal("Failed to upload file name1", err)
-	}
-
-	name2, _ := createFile(31)
-	_, err = session.UploadFile(name2, node31, "", nil)
-	os.Remove(name2)
-
-	if err != nil {
-		t.Fatal("Failed to upload file name2", err)
-	}
-
-	name3, _ := createFile(31)
-	_, err = session.UploadFile(name3, node22, "", nil)
-	os.Remove(name3)
-
-	if err != nil {
-		t.Fatal("Failed to upload file name3", err)
-	}
+	_, name1, _ := uploadFile(t, session, 31, node31)
+	_, _, _ = uploadFile(t, session, 31, node31)
+	_, name3, _ := uploadFile(t, session, 31, node22)
 
 	testpaths := [][]string{
 		{"dir-1-" + rs, "dir-2-2-" + rs, path.Base(name3)},
@@ -281,15 +276,13 @@ func TestPathLookup(t *testing.T) {
 }
 
 func TestEventNotify(t *testing.T) {
-	session1 := initSession()
-	session2 := initSession()
+	session1 := initSession(t)
+	session2 := initSession(t)
 
-	name, _ := createFile(31)
-	node, _ := session1.UploadFile(name, session1.FS.root, "", nil)
-	os.Remove(name)
+	node, _, _ := uploadFile(t, session1, 31, session1.FS.root)
 
-	for i := 0; i < 10; i++ {
-		time.Sleep(time.Second * 10)
+	for i := 0; i < 60; i++ {
+		time.Sleep(time.Second * 1)
 		node = session2.FS.HashLookup(node.hash)
 		if node != nil {
 			break
@@ -300,10 +293,9 @@ func TestEventNotify(t *testing.T) {
 		t.Fatal("Expects file to found in second client's FS")
 	}
 
-	err := session2.Delete(node, true)
-	if err != nil {
-		t.Fatal("Delete failed", err)
-	}
+	retry(t, "Delete", func() error {
+		return session2.Delete(node, true)
+	})
 
 	time.Sleep(time.Second * 5)
 	node = session1.FS.HashLookup(node.hash)
@@ -313,26 +305,18 @@ func TestEventNotify(t *testing.T) {
 }
 
 func TestExportLink(t *testing.T) {
-	session := initSession()
-	name, _ := createFile(31)
-	node, err := session.UploadFile(name, session.FS.root, "", nil)
-	os.Remove(name)
-	if err != nil {
-		t.Fatal("Upload failed", err)
-	}
-	if node == nil {
-		t.Error("Failed to obtain node after upload")
-	}
+	session := initSession(t)
+	node, _, _ := uploadFile(t, session, 31, session.FS.root)
 
 	// Don't include decryption key
-	_, err = session.Link(node, false);
-	if err != nil {
-		t.Error("Failed to export link (key not included)")
-	}
+	retry(t, "Failed to export link (key not included)", func() error {
+		_, err := session.Link(node, false)
+		return err
+	})
 
 	// Do include decryption key
-	_, err = session.Link(node, true);
-	if err != nil {
-		t.Error("Failed to export link (key included)")
-	}
+	retry(t, "Failed to export link (key included)", func() error {
+		_, err := session.Link(node, true)
+		return err
+	})
 }
