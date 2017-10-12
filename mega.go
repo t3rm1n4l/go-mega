@@ -1227,18 +1227,17 @@ func (m *Mega) pollEvents() {
 			// Try parsing as a lone error message
 			var emsg ErrorMsg
 			err = json.Unmarshal(buf, &emsg)
-			if err == nil {
+			if err != nil {
+				log.Printf("Bad response received from server: %s", buf)
+			} else {
 				err = parseError(emsg)
 				if err == EAGAIN {
 					time.Sleep(time.Millisecond * time.Duration(10))
-					continue
-				}
-				log.Printf("Top level error message received %s", buf)
-				if err != nil {
-					panic("Bad response received from server: " + err.Error())
+				} else if err != nil {
+					log.Printf("Error received from server: %v", err)
 				}
 			}
-			panic("Bad response received from server - " + string(buf))
+			continue
 		}
 
 		// if wait URL is set, then fetch it and continue - we
@@ -1266,7 +1265,7 @@ func (m *Mega) pollEvents() {
 				log.Printf("Error message received %s", evRaw)
 				err = parseError(emsg)
 				if err != nil {
-					panic("Bad response received from server - %s" + err.Error())
+					log.Printf("Event from server was error: %v", err)
 				}
 				continue
 			}
@@ -1275,7 +1274,8 @@ func (m *Mega) pollEvents() {
 			var gev GenericEvent
 			err = json.Unmarshal(evRaw, &gev)
 			if err != nil {
-				panic("Bad response event from server: " + string(evRaw) + ": " + err.Error())
+				log.Printf("Couldn't parse event from server: %v: %s", err, evRaw)
+				continue
 			}
 			// log.Printf("Parsing command %q: %s", gev.Cmd, evRaw)
 
