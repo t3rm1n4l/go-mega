@@ -2,6 +2,7 @@ package mega
 
 import (
 	"errors"
+	"fmt"
 )
 
 var (
@@ -40,6 +41,8 @@ type ErrorMsg int
 
 func parseError(errno ErrorMsg) error {
 	switch {
+	case errno == 0:
+		return nil
 	case errno == -1:
 		return EINTERNAL
 	case errno == -2:
@@ -78,5 +81,5 @@ func parseError(errno ErrorMsg) error {
 		return ETEMPUNAVAIL
 	}
 
-	return nil
+	return fmt.Errorf("Unknown mega error %d", errno)
 }
