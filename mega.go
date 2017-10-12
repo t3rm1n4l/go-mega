@@ -1139,14 +1139,70 @@ func (m *Mega) Delete(node *Node, destroy bool) error {
 	return err
 }
 
+// process an add node event
+func (m *Mega) processAddNode(evRaw []byte) error {
+	m.FS.mutex.Lock()
+	defer m.FS.mutex.Unlock()
+
+	var ev FSEvent
+	err := json.Unmarshal(evRaw, &ev)
+	if err != nil {
+		return err
+	}
+
+	for _, itm := range ev.T.Files {
+		m.addFSNode(itm)
+	}
+	return nil
+}
+
+// process an update node event
+func (m *Mega) processUpdateNode(evRaw []byte) error {
+	m.FS.mutex.Lock()
+	defer m.FS.mutex.Unlock()
+
+	var ev FSEvent
+	err := json.Unmarshal(evRaw, &ev)
+	if err != nil {
+		return err
+	}
+
+	node := m.FS.hashLookup(ev.N)
+	attr, err := decryptAttr(node.meta.key, []byte(ev.Attr))
+	if err == nil {
+		node.name = attr.Name
+	} else {
+		node.name = "BAD ATTRIBUTE"
+	}
+
+	node.ts = time.Unix(ev.Ts, 0)
+	return nil
+}
+
+// process a delete node event
+func (m *Mega) processDeleteNode(evRaw []byte) error {
+	m.FS.mutex.Lock()
+	defer m.FS.mutex.Unlock()
+
+	var ev FSEvent
+	err := json.Unmarshal(evRaw, &ev)
+	if err != nil {
+		return err
+	}
+
+	node := m.FS.hashLookup(ev.N)
+	if node != nil && node.parent != nil {
+		node.parent.removeChild(node)
+		delete(m.FS.lookup, node.hash)
+	}
+	return nil
+}
+
 // Listen for server event notifications and play actions
 func (m *Mega) pollEvents() {
-	var b []byte
-
 	for {
-		var events Events
 		url := fmt.Sprintf("%s/sc?sn=%s&sid=%s", m.baseurl, m.ssn, string(m.sid))
-		resp, err := client.Post(url, "application/xml", bytes.NewBuffer(b))
+		resp, err := client.Post(url, "application/xml", nil)
 		if err != nil {
 			time.Sleep(time.Millisecond * 10)
 			continue
@@ -1164,7 +1220,8 @@ func (m *Mega) pollEvents() {
 		}
 		resp.Body.Close()
 
-		// Parse an array of
+		// First attempt to parse an array
+		var events Events
 		err = json.Unmarshal(buf, &events)
 		if err != nil {
 			// Try parsing as a lone error message
@@ -1178,16 +1235,29 @@ func (m *Mega) pollEvents() {
 				}
 				log.Printf("Top level error message received %s", buf)
 				if err != nil {
-					panic("Bad response received from server - %s" + err.Error())
+					panic("Bad response received from server: " + err.Error())
 				}
 			}
 			panic("Bad response received from server - " + string(buf))
 		}
 
-		if bytes.HasPrefix(buf, []byte("{")) == false && bytes.HasPrefix(buf, []byte("-")) == false {
-			panic("Bad response received from server - " + string(buf))
+		// if wait URL is set, then fetch it and continue - we
+		// don't expect anything else if we have a wait URL.
+		if events.W != "" {
+			if len(events.E) > 0 {
+				log.Printf("Not expecting events with w set: %s", buf)
+			}
+			rsp, err := client.Get(events.W)
+			if err != nil {
+				time.Sleep(time.Millisecond * 10)
+			} else {
+				rsp.Body.Close()
+			}
+			continue
 		}
+		m.ssn = events.Sn
 
+		// For each event in the array, parse it
 		for _, evRaw := range events.E {
 			// First attempt to unmarshal as an error message
 			var emsg ErrorMsg
@@ -1198,6 +1268,7 @@ func (m *Mega) pollEvents() {
 				if err != nil {
 					panic("Bad response received from server - %s" + err.Error())
 				}
+				continue
 			}
 
 			// Now unmarshal as a generic event
@@ -1208,76 +1279,40 @@ func (m *Mega) pollEvents() {
 			}
 			// log.Printf("Parsing command %q: %s", gev.Cmd, evRaw)
 
-			if events.W != "" {
-				rsp, err := client.Get(events.W)
+			// Work out what to do with the event
+			var process func([]byte) error
+			switch gev.Cmd {
+			case "t": // node addition
+				process = m.processAddNode
+			case "u": // node update
+				process = m.processUpdateNode
+			case "d": // node deletion
+				process = m.processDeleteNode
+			case "s", "s2": // share addition/update/revocation
+			case "c": // contact addition/update
+			case "k": // crypto key request
+			case "fa": // file attribute update
+			case "ua": // user attribute update
+			case "psts": // account updated
+			case "ipc": // incoming pending contact request (to us)
+			case "opc": // outgoing pending contact request (from us)
+			case "upci": // incoming pending contact request update (accept/deny/ignore)
+			case "upco": // outgoing pending contact request update (from them, accept/deny/ignore)
+			case "ph": // public links handles
+			case "se": // set email
+			case "mcc": // chat creation / peer's invitation / peer's removal
+			case "mcna": // granted / revoked access to a node
+			case "uac": // user access control
+			default:
+				log.Printf("Unknown message %q received: %s", gev.Cmd, evRaw)
+			}
+
+			// process the event if we can
+			if process != nil {
+				err := process(evRaw)
 				if err != nil {
-					time.Sleep(time.Millisecond * 10)
-					continue
+					log.Printf("Error processing event %q '%s': %v", gev.Cmd, evRaw, err)
 				}
-
-				if rsp.StatusCode != 200 {
-					rsp.Body.Close()
-					continue
-				}
-
-			} else {
-				m.FS.mutex.Lock()
-				switch gev.Cmd {
-				case "t": // node addition
-					var ev FSEvent
-					err = json.Unmarshal(evRaw, &ev)
-					if err != nil {
-						panic("Couldn't parse FSEvent: " + string(evRaw) + ": " + err.Error())
-					}
-					for _, itm := range ev.T.Files {
-						m.addFSNode(itm)
-					}
-				case "u": // node update
-					var ev FSEvent
-					err = json.Unmarshal(evRaw, &ev)
-					if err != nil {
-						panic("Couldn't parse FSEvent: " + string(evRaw) + ": " + err.Error())
-					}
-					node := m.FS.hashLookup(ev.N)
-					attr, err := decryptAttr(node.meta.key, []byte(ev.Attr))
-					if err == nil {
-						node.name = attr.Name
-					} else {
-						node.name = "BAD ATTRIBUTE"
-					}
-
-					node.ts = time.Unix(ev.Ts, 0)
-				case "d": // node deletion
-					var ev FSEvent
-					err = json.Unmarshal(evRaw, &ev)
-					if err != nil {
-						panic("Couldn't parse FSEvent: " + string(evRaw) + ": " + err.Error())
-					}
-					node := m.FS.hashLookup(ev.N)
-					if node != nil && node.parent != nil {
-						node.parent.removeChild(node)
-						delete(m.FS.lookup, node.hash)
-					}
-				case "s", "s2": // share addition/update/revocation
-				case "c": // contact addition/update
-				case "k": // crypto key request
-				case "fa": // file attribute update
-				case "ua": // user attribute update
-				case "psts": // account updated
-				case "ipc": // incoming pending contact request (to us)
-				case "opc": // outgoing pending contact request (from us)
-				case "upci": // incoming pending contact request update (accept/deny/ignore)
-				case "upco": // outgoing pending contact request update (from them, accept/deny/ignore)
-				case "ph": // public links handles
-				case "se": // set email
-				case "mcc": // chat creation / peer's invitation / peer's removal
-				case "mcna": // granted / revoked access to a node
-				case "uac": // user access control
-				default:
-					log.Printf("Unknown message %q received: %s", gev.Cmd, evRaw)
-				}
-				m.ssn = events.Sn
-				m.FS.mutex.Unlock()
 			}
 		}
 	}
