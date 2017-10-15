@@ -21,8 +21,6 @@ import (
 	"time"
 )
 
-var client *http.Client
-
 // Default settings
 const (
 	API_URL              = "https://eu.api.mega.co.nz"
@@ -105,6 +103,8 @@ type Mega struct {
 	uh []byte
 	// Filesystem object
 	FS *MegaFS
+	// HTTP Client
+	client *http.Client
 }
 
 // Filesystem node types
@@ -309,13 +309,19 @@ func New() *Mega {
 	max := big.NewInt(0x100000000)
 	bigx, _ := rand.Int(rand.Reader, max)
 	cfg := newConfig()
-	client = newHttpClient(cfg.timeout)
 	mgfs := newMegaFS()
 	m := &Mega{
 		config: cfg,
 		sn:     bigx.Int64(),
 		FS:     mgfs,
+		client: newHttpClient(cfg.timeout),
 	}
+	return m
+}
+
+// SetClient sets the HTTP client in use
+func (m *Mega) SetClient(client *http.Client) *Mega {
+	m.client = client
 	return m
 }
 
@@ -336,7 +342,7 @@ func (m *Mega) api_request(r []byte) ([]byte, error) {
 	}
 
 	for i := 0; i < m.retries+1; i++ {
-		resp, err = client.Post(url, "application/json", bytes.NewBuffer(r))
+		resp, err = m.client.Post(url, "application/json", bytes.NewBuffer(r))
 		if err == nil {
 			if resp.StatusCode == 200 {
 				goto success
@@ -713,7 +719,7 @@ func (m Mega) DownloadFile(src *Node, dstpath string, progress *chan int) error 
 				mutex.Unlock()
 				chunk_url := fmt.Sprintf("%s/%d-%d", resourceUrl, chk_start, chk_start+chk_size-1)
 				for retry := 0; retry < m.retries+1; retry++ {
-					resource, err = client.Get(chunk_url)
+					resource, err = m.client.Get(chunk_url)
 					if err == nil {
 						if resource.StatusCode == 200 {
 							break
@@ -933,7 +939,7 @@ func (m *Mega) UploadFile(srcpath string, parent *Node, name string, progress *c
 
 				chunk_resp := []byte{}
 				for retry := 0; retry < m.retries+1; retry++ {
-					rsp, err = client.Do(req)
+					rsp, err = m.client.Do(req)
 					if err == nil {
 						if rsp.StatusCode == 200 {
 							break
@@ -1263,7 +1269,7 @@ func (m *Mega) processDeleteNode(evRaw []byte) error {
 func (m *Mega) pollEvents() {
 	for {
 		url := fmt.Sprintf("%s/sc?sn=%s&sid=%s", m.baseurl, m.ssn, string(m.sid))
-		resp, err := client.Post(url, "application/xml", nil)
+		resp, err := m.client.Post(url, "application/xml", nil)
 		if err != nil {
 			time.Sleep(time.Millisecond * 10)
 			continue
@@ -1311,7 +1317,7 @@ func (m *Mega) pollEvents() {
 			if len(events.E) > 0 {
 				log.Printf("Not expecting events with w set: %s", buf)
 			}
-			rsp, err := client.Get(events.W)
+			rsp, err := m.client.Get(events.W)
 			if err != nil {
 				time.Sleep(time.Millisecond * 10)
 			} else {
