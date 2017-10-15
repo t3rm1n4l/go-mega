@@ -105,6 +105,9 @@ type Mega struct {
 	FS *MegaFS
 	// HTTP Client
 	client *http.Client
+	// Loggers
+	logf   func(format string, v ...interface{})
+	debugf func(format string, v ...interface{})
 }
 
 // Filesystem node types
@@ -316,12 +319,38 @@ func New() *Mega {
 		FS:     mgfs,
 		client: newHttpClient(cfg.timeout),
 	}
+	m.SetLogger(log.Printf)
+	m.SetDebugger(nil)
 	return m
 }
 
 // SetClient sets the HTTP client in use
 func (m *Mega) SetClient(client *http.Client) *Mega {
 	m.client = client
+	return m
+}
+
+// discardLogf discards the log messages
+func discardLogf(format string, v ...interface{}) {
+}
+
+// SetLogger sets the logger for important messages.  By default this
+// is log.Printf.  Use nil to discard the messages.
+func (m *Mega) SetLogger(logf func(format string, v ...interface{})) *Mega {
+	if logf == nil {
+		logf = discardLogf
+	}
+	m.logf = logf
+	return m
+}
+
+// SetDebugger sets the logger for debug messages.  By default these
+// messages are not output.
+func (m *Mega) SetDebugger(debugf func(format string, v ...interface{})) *Mega {
+	if debugf == nil {
+		debugf = discardLogf
+	}
+	m.debugf = debugf
 	return m
 }
 
@@ -1287,7 +1316,7 @@ func (m *Mega) pollEvents() {
 		}
 		err = resp.Body.Close()
 		if err != nil {
-			log.Printf("Error closing body: %v", err)
+			m.logf("pollEvents: Error closing body: %v", err)
 			continue
 		}
 
@@ -1299,13 +1328,13 @@ func (m *Mega) pollEvents() {
 			var emsg ErrorMsg
 			err = json.Unmarshal(buf, &emsg)
 			if err != nil {
-				log.Printf("Bad response received from server: %s", buf)
+				m.logf("pollEvents: Bad response received from server: %s", buf)
 			} else {
 				err = parseError(emsg)
 				if err == EAGAIN {
 					time.Sleep(time.Millisecond * time.Duration(10))
 				} else if err != nil {
-					log.Printf("Error received from server: %v", err)
+					m.logf("pollEvents: Error received from server: %v", err)
 				}
 			}
 			continue
@@ -1315,7 +1344,7 @@ func (m *Mega) pollEvents() {
 		// don't expect anything else if we have a wait URL.
 		if events.W != "" {
 			if len(events.E) > 0 {
-				log.Printf("Not expecting events with w set: %s", buf)
+				m.logf("pollEvents: Unexpected event with w set: %s", buf)
 			}
 			rsp, err := m.client.Get(events.W)
 			if err != nil {
@@ -1333,10 +1362,10 @@ func (m *Mega) pollEvents() {
 			var emsg ErrorMsg
 			err = json.Unmarshal(evRaw, &emsg)
 			if err == nil {
-				log.Printf("Error message received %s", evRaw)
+				m.logf("pollEvents: Error message received %s", evRaw)
 				err = parseError(emsg)
 				if err != nil {
-					log.Printf("Event from server was error: %v", err)
+					m.logf("pollEvents: Event from server was error: %v", err)
 				}
 				continue
 			}
@@ -1345,10 +1374,10 @@ func (m *Mega) pollEvents() {
 			var gev GenericEvent
 			err = json.Unmarshal(evRaw, &gev)
 			if err != nil {
-				log.Printf("Couldn't parse event from server: %v: %s", err, evRaw)
+				m.logf("pollEvents: Couldn't parse event from server: %v: %s", err, evRaw)
 				continue
 			}
-			// log.Printf("Parsing command %q: %s", gev.Cmd, evRaw)
+			m.debugf("pollEvents: Parsing event %q: %s", gev.Cmd, evRaw)
 
 			// Work out what to do with the event
 			var process func([]byte) error
@@ -1375,14 +1404,14 @@ func (m *Mega) pollEvents() {
 			case "mcna": // granted / revoked access to a node
 			case "uac": // user access control
 			default:
-				log.Printf("Unknown message %q received: %s", gev.Cmd, evRaw)
+				m.debugf("pollEvents: Unknown message %q received: %s", gev.Cmd, evRaw)
 			}
 
 			// process the event if we can
 			if process != nil {
 				err := process(evRaw)
 				if err != nil {
-					log.Printf("Error processing event %q '%s': %v", gev.Cmd, evRaw, err)
+					m.logf("pollEvents: Error processing event %q '%s': %v", gev.Cmd, evRaw, err)
 				}
 			}
 		}
