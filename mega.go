@@ -155,27 +155,27 @@ func (n *Node) addChild(c *Node) {
 	}
 }
 
-func (n Node) getChildren() []*Node {
+func (n *Node) getChildren() []*Node {
 	return n.children
 }
 
-func (n Node) GetType() int {
+func (n *Node) GetType() int {
 	return n.ntype
 }
 
-func (n Node) GetSize() int64 {
+func (n *Node) GetSize() int64 {
 	return n.size
 }
 
-func (n Node) GetTimeStamp() time.Time {
+func (n *Node) GetTimeStamp() time.Time {
 	return n.ts
 }
 
-func (n Node) GetName() string {
+func (n *Node) GetName() string {
 	return n.name
 }
 
-func (n Node) GetHash() string {
+func (n *Node) GetHash() string {
 	return n.hash
 }
 
@@ -465,7 +465,7 @@ func (m *Mega) Login(email string, passwd string) error {
 }
 
 // Get user information
-func (m Mega) GetUser() (UserResp, error) {
+func (m *Mega) GetUser() (UserResp, error) {
 	var msg [1]UserMsg
 	var res [1]UserResp
 
@@ -661,7 +661,7 @@ func (m *Mega) getFileSystem() error {
 }
 
 // Download file from filesystem
-func (m Mega) DownloadFile(src *Node, dstpath string, progress *chan int) error {
+func (m *Mega) DownloadFile(src *Node, dstpath string, progress *chan int) error {
 	m.FS.mutex.Lock()
 	defer m.FS.mutex.Unlock()
 
