@@ -121,6 +121,7 @@ const (
 
 // Filesystem node
 type Node struct {
+	fs       *MegaFS
 	name     string
 	hash     string
 	parent   *Node
@@ -160,22 +161,32 @@ func (n *Node) getChildren() []*Node {
 }
 
 func (n *Node) GetType() int {
+	n.fs.mutex.Lock()
+	defer n.fs.mutex.Unlock()
 	return n.ntype
 }
 
 func (n *Node) GetSize() int64 {
+	n.fs.mutex.Lock()
+	defer n.fs.mutex.Unlock()
 	return n.size
 }
 
 func (n *Node) GetTimeStamp() time.Time {
+	n.fs.mutex.Lock()
+	defer n.fs.mutex.Unlock()
 	return n.ts
 }
 
 func (n *Node) GetName() string {
+	n.fs.mutex.Lock()
+	defer n.fs.mutex.Unlock()
 	return n.name
 }
 
 func (n *Node) GetHash() string {
+	n.fs.mutex.Lock()
+	defer n.fs.mutex.Unlock()
 	return n.hash
 }
 
@@ -557,6 +568,7 @@ func (m *Mega) addFSNode(itm FSNode) (*Node, error) {
 		node = n
 	default:
 		node = &Node{
+			fs:    m.FS,
 			ntype: itm.T,
 			size:  itm.Sz,
 			ts:    time.Unix(itm.Ts, 0),
@@ -575,6 +587,7 @@ func (m *Mega) addFSNode(itm FSNode) (*Node, error) {
 		parent = nil
 		if itm.Parent != "" {
 			parent = &Node{
+				fs:       m.FS,
 				children: []*Node{node},
 				ntype:    FOLDER,
 			}
