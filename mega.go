@@ -731,14 +731,8 @@ func (m *Mega) DownloadFile(src *Node, dstpath string, progress *chan int) error
 	t := bytes_to_a32(src.meta.iv)
 	iv := a32_to_bytes([]uint32{t[0], t[1], t[0], t[1]})
 
-	sorted_chunks := []int{}
-	chunks := getChunkSizes(int(res[0].Size))
+	chunks := getChunkSizes(int64(res[0].Size))
 	chunk_macs := make([][]byte, len(chunks))
-
-	for k, _ := range chunks {
-		sorted_chunks = append(sorted_chunks, k)
-	}
-	sort.Ints(sorted_chunks)
 
 	workch := make(chan int)
 	errch := make(chan error, m.dl_workers)
@@ -756,10 +750,10 @@ func (m *Mega) DownloadFile(src *Node, dstpath string, progress *chan int) error
 				var resource *http.Response
 				var err error
 				mutex.Lock()
-				chk_start := sorted_chunks[id]
-				chk_size := chunks[chk_start]
+				chk_start := chunks[id].position
+				chk_size := chunks[id].size
 				mutex.Unlock()
-				chunk_url := fmt.Sprintf("%s/%d-%d", resourceUrl, chk_start, chk_start+chk_size-1)
+				chunk_url := fmt.Sprintf("%s/%d-%d", resourceUrl, chk_start, chk_start+int64(chk_size)-1)
 				for retry := 0; retry < m.retries+1; retry++ {
 					resource, err = m.client.Get(chunk_url)
 					if err == nil {
@@ -922,7 +916,7 @@ func (m *Mega) UploadFile(srcpath string, parent *Node, name string, progress *c
 	iv := a32_to_bytes([]uint32{ukey[4], ukey[5], ukey[4], ukey[5]})
 
 	sorted_chunks := []int{}
-	chunks := getChunkSizes(int(fileSize))
+	chunks := getChunkSizes(fileSize)
 	chunk_macs := make([][]byte, len(chunks))
 
 	for k, _ := range chunks {
@@ -943,8 +937,8 @@ func (m *Mega) UploadFile(srcpath string, parent *Node, name string, progress *c
 
 			for id := range workch {
 				mutex.Lock()
-				chk_start := sorted_chunks[id]
-				chk_size := chunks[chk_start]
+				chk_start := chunks[id].position
+				chk_size := chunks[id].size
 				mutex.Unlock()
 				ctr_iv := bytes_to_a32(kiv)
 				ctr_iv[2] = uint32(uint64(chk_start) / 0x1000000000)
@@ -1025,8 +1019,7 @@ func (m *Mega) UploadFile(srcpath string, parent *Node, name string, progress *c
 	if len(chunks) == 0 {
 		// File size is zero
 		// Tell single worker to request for completion handle
-		sorted_chunks = append(sorted_chunks, 0)
-		chunks[0] = 0
+		chunks = append(chunks, chunkSize{position: 0, size: 0})
 		workch <- 0
 	} else {
 		// Place chunk download jobs to chan
