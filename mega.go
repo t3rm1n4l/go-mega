@@ -991,6 +991,11 @@ func (m *Mega) UploadFile(srcpath string, parent *Node, name string, progress *c
 					}
 				}
 
+				if rsp == nil {
+					errch <- errors.New("retries exceeded")
+					return
+				}
+
 				chunk_resp, err = ioutil.ReadAll(rsp.Body)
 				if err != nil {
 					errch <- err
