@@ -113,10 +113,9 @@ func fileMD5(t *testing.T, name string) string {
 
 func TestLogin(t *testing.T) {
 	m := New()
-	err := m.Login(USER, PASSWORD)
-	if err != nil {
-		t.Error("Login failed", err)
-	}
+	retry(t, "Login", func() error {
+		return m.Login(USER, PASSWORD)
+	})
 }
 
 func TestGetUser(t *testing.T) {
