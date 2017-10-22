@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"math/big"
@@ -15,7 +16,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -673,27 +673,203 @@ func (m *Mega) getFileSystem() error {
 	return nil
 }
 
-// Download file from filesystem
-func (m *Mega) DownloadFile(src *Node, dstpath string, progress *chan int) error {
-	m.FS.mutex.Lock()
-	defer m.FS.mutex.Unlock()
+// Download contains the internal state of a download
+type Download struct {
+	m           *Mega
+	src         *Node
+	resourceUrl string
+	aes_block   cipher.Block
+	iv          []byte
+	mac_data    []byte
+	mac_enc     cipher.BlockMode
+	mutex       sync.Mutex // to protect the following
+	chunks      []chunkSize
+	chunk_macs  [][]byte
+}
 
+// Create a new Download from the src Node
+//
+// Call Chunks to find out how many chunks there are, then for id =
+// 0..chunks-1 call DownloadChunk.  Finally call Finish() to receive
+// the error status.
+func (m *Mega) NewDownload(src *Node) (*Download, error) {
+	if src == nil {
+		return nil, EARGS
+	}
+
+	var msg [1]DownloadMsg
+	var res [1]DownloadResp
+
+	msg[0].Cmd = "g"
+	msg[0].G = 1
+	msg[0].N = src.hash
+
+	request, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
+	result, err := m.api_request(request)
+	if err != nil {
+		return nil, err
+	}
+
+	err = json.Unmarshal(result, &res)
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = decryptAttr(src.meta.key, []byte(res[0].Attr))
+	if err != nil {
+		return nil, err
+	}
+
+	chunks := getChunkSizes(int64(res[0].Size))
+
+	aes_block, err := aes.NewCipher(src.meta.key)
+	if err != nil {
+		return nil, err
+	}
+
+	mac_data := a32_to_bytes([]uint32{0, 0, 0, 0})
+	mac_enc := cipher.NewCBCEncrypter(aes_block, mac_data)
+	t := bytes_to_a32(src.meta.iv)
+	iv := a32_to_bytes([]uint32{t[0], t[1], t[0], t[1]})
+
+	d := &Download{
+		m:           m,
+		src:         src,
+		resourceUrl: res[0].G,
+		aes_block:   aes_block,
+		iv:          iv,
+		mac_data:    mac_data,
+		mac_enc:     mac_enc,
+		chunks:      chunks,
+		chunk_macs:  make([][]byte, len(chunks)),
+	}
+	return d, nil
+}
+
+// Chunks returns The number of chunks in the download.
+func (d *Download) Chunks() int {
+	return len(d.chunks)
+}
+
+// ChunkLocation returns the position in the file and the size of the chunk
+func (d *Download) ChunkLocation(id int) (position int64, size int, err error) {
+	if id < 0 || id >= len(d.chunks) {
+		return 0, 0, EARGS
+	}
+	d.mutex.Lock()
+	defer d.mutex.Unlock()
+	return d.chunks[id].position, d.chunks[id].size, nil
+}
+
+// DownloadChunk gets a chunk with the given number and update the
+// mac, returning the position in the file of the chunk
+func (d *Download) DownloadChunk(id int) (chunk []byte, err error) {
+	if id < 0 || id >= len(d.chunks) {
+		return nil, EARGS
+	}
+
+	chk_start, chk_size, err := d.ChunkLocation(id)
+	if err != nil {
+		return nil, err
+	}
+
+	var resource *http.Response
+	chunk_url := fmt.Sprintf("%s/%d-%d", d.resourceUrl, chk_start, chk_start+int64(chk_size)-1)
+	for retry := 0; retry < d.m.retries+1; retry++ {
+		resource, err = d.m.client.Get(chunk_url)
+		if err == nil {
+			if resource.StatusCode == 200 {
+				break
+			} else {
+				_ = resource.Body.Close()
+			}
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	if resource == nil {
+		return nil, errors.New("retries exceeded")
+	}
+
+	chunk, err = ioutil.ReadAll(resource.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	err = resource.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+
+	if len(chunk) != chk_size {
+		return nil, errors.New("wrong size for downloaded chunk")
+	}
+
+	// Decrypt the block
+	ctr_iv := bytes_to_a32(d.src.meta.iv)
+	ctr_iv[2] = uint32(uint64(chk_start) / 0x1000000000)
+	ctr_iv[3] = uint32(chk_start / 0x10)
+	ctr_aes := cipher.NewCTR(d.aes_block, a32_to_bytes(ctr_iv))
+	ctr_aes.XORKeyStream(chunk, chunk)
+
+	// Update the chunk_macs
+	enc := cipher.NewCBCEncrypter(d.aes_block, d.iv)
+	i := 0
+	block := make([]byte, 16)
+	paddedChunk := paddnull(chunk, 16)
+	for i = 0; i < len(paddedChunk); i += 16 {
+		enc.CryptBlocks(block, paddedChunk[i:i+16])
+	}
+
+	d.mutex.Lock()
+	if len(d.chunk_macs) > 0 {
+		d.chunk_macs[id] = make([]byte, 16)
+		copy(d.chunk_macs[id], block)
+	}
+	d.mutex.Unlock()
+
+	return chunk, nil
+}
+
+// Finish checks the accumulated MAC for each block.
+//
+// If all the chunks weren't downloaded then it will just return nil
+func (d *Download) Finish() (err error) {
+	for _, v := range d.chunk_macs {
+		// If a chunk_macs hasn't been set then the whole file
+		// wasn't downloaded and we can't check it
+		if v == nil {
+			return nil
+		}
+		d.mac_enc.CryptBlocks(d.mac_data, v)
+	}
+
+	tmac := bytes_to_a32(d.mac_data)
+	if bytes.Equal(a32_to_bytes([]uint32{tmac[0] ^ tmac[1], tmac[2] ^ tmac[3]}), d.src.meta.mac) == false {
+		return EMACMISMATCH
+	}
+
+	return nil
+}
+
+// Download file from filesystem reporting progress if not nil
+func (m *Mega) DownloadFile(src *Node, dstpath string, progress *chan int) error {
 	defer func() {
 		if progress != nil {
 			close(*progress)
 		}
 	}()
 
-	if src == nil {
-		return EARGS
+	d, err := m.NewDownload(src)
+	if err != nil {
+		return err
 	}
 
-	var msg [1]DownloadMsg
-	var res [1]DownloadResp
-	var outfile *os.File
-	var mutex sync.Mutex
-
-	_, err := os.Stat(dstpath)
+	_, err = os.Stat(dstpath)
 	if os.IsExist(err) {
 		err = os.Remove(dstpath)
 		if err != nil {
@@ -701,38 +877,10 @@ func (m *Mega) DownloadFile(src *Node, dstpath string, progress *chan int) error
 		}
 	}
 
-	outfile, err = os.OpenFile(dstpath, os.O_RDWR|os.O_CREATE, 0600)
+	outfile, err := os.OpenFile(dstpath, os.O_RDWR|os.O_CREATE, 0600)
 	if err != nil {
 		return err
 	}
-
-	msg[0].Cmd = "g"
-	msg[0].G = 1
-	msg[0].N = src.hash
-
-	request, _ := json.Marshal(msg)
-	result, err := m.api_request(request)
-	if err != nil {
-		return err
-	}
-
-	err = json.Unmarshal(result, &res)
-	if err != nil {
-		return err
-	}
-	resourceUrl := res[0].G
-
-	_, err = decryptAttr(src.meta.key, []byte(res[0].Attr))
-
-	aes_block, _ := aes.NewCipher(src.meta.key)
-
-	mac_data := a32_to_bytes([]uint32{0, 0, 0, 0})
-	mac_enc := cipher.NewCBCEncrypter(aes_block, mac_data)
-	t := bytes_to_a32(src.meta.iv)
-	iv := a32_to_bytes([]uint32{t[0], t[1], t[0], t[1]})
-
-	chunks := getChunkSizes(int64(res[0].Size))
-	chunk_macs := make([][]byte, len(chunks))
 
 	workch := make(chan int)
 	errch := make(chan error, m.dl_workers)
@@ -747,71 +895,26 @@ func (m *Mega) DownloadFile(src *Node, dstpath string, progress *chan int) error
 
 			// Wait for work blocked on channel
 			for id := range workch {
-				var resource *http.Response
-				var err error
-				mutex.Lock()
-				chk_start := chunks[id].position
-				chk_size := chunks[id].size
-				mutex.Unlock()
-				chunk_url := fmt.Sprintf("%s/%d-%d", resourceUrl, chk_start, chk_start+int64(chk_size)-1)
-				for retry := 0; retry < m.retries+1; retry++ {
-					resource, err = m.client.Get(chunk_url)
-					if err == nil {
-						if resource.StatusCode == 200 {
-							break
-						} else {
-							_ = resource.Body.Close()
-						}
-					}
-				}
-
-				var ctr_iv []uint32
-				var ctr_aes cipher.Stream
-				var chunk []byte
-
-				if err == nil {
-					ctr_iv = bytes_to_a32(src.meta.iv)
-					ctr_iv[2] = uint32(uint64(chk_start) / 0x1000000000)
-					ctr_iv[3] = uint32(chk_start / 0x10)
-					ctr_aes = cipher.NewCTR(aes_block, a32_to_bytes(ctr_iv))
-					chunk, err = ioutil.ReadAll(resource.Body)
-				}
-
-				if err != nil {
-					errch <- err
-					return
-				}
-				err = resource.Body.Close()
+				chunk, err := d.DownloadChunk(id)
 				if err != nil {
 					errch <- err
 					return
 				}
 
-				ctr_aes.XORKeyStream(chunk, chunk)
-				_, err = outfile.WriteAt(chunk, int64(chk_start))
+				chk_start, _, err := d.ChunkLocation(id)
 				if err != nil {
 					errch <- err
 					return
 				}
 
-				enc := cipher.NewCBCEncrypter(aes_block, iv)
-				i := 0
-				block := []byte{}
-				chunk = paddnull(chunk, 16)
-				for i = 0; i < len(chunk); i += 16 {
-					block = chunk[i : i+16]
-					enc.CryptBlocks(block, block)
+				_, err = outfile.WriteAt(chunk, chk_start)
+				if err != nil {
+					errch <- err
+					return
 				}
-
-				mutex.Lock()
-				if len(chunk_macs) > 0 {
-					chunk_macs[id] = make([]byte, 16)
-					copy(chunk_macs[id], block)
-				}
-				mutex.Unlock()
 
 				if progress != nil {
-					*progress <- chk_size
+					*progress <- len(chunk)
 				}
 			}
 		}()
@@ -819,7 +922,7 @@ func (m *Mega) DownloadFile(src *Node, dstpath string, progress *chan int) error
 
 	// Place chunk download jobs to chan
 	err = nil
-	for id := 0; id < len(chunks) && err == nil; {
+	for id := 0; id < d.Chunks() && err == nil; {
 		select {
 		case workch <- id:
 			id++
@@ -830,66 +933,58 @@ func (m *Mega) DownloadFile(src *Node, dstpath string, progress *chan int) error
 
 	wg.Wait()
 
+	closeErr := outfile.Close()
 	if err != nil {
 		_ = os.Remove(dstpath)
 		return err
 	}
-
-	for _, v := range chunk_macs {
-		mac_enc.CryptBlocks(mac_data, v)
+	if closeErr != nil {
+		return closeErr
 	}
 
-	err = outfile.Close()
-	if err != nil {
-		return err
-	}
-	tmac := bytes_to_a32(mac_data)
-	if bytes.Equal(a32_to_bytes([]uint32{tmac[0] ^ tmac[1], tmac[2] ^ tmac[3]}), src.meta.mac) == false {
-		return EMACMISMATCH
-	}
-
-	return nil
+	return d.Finish()
 }
 
-// Upload a file to the filesystem
-func (m *Mega) UploadFile(srcpath string, parent *Node, name string, progress *chan int) (*Node, error) {
-	m.FS.mutex.Lock()
-	defer m.FS.mutex.Unlock()
+// Upload contains the internal state of a upload
+type Upload struct {
+	m                 *Mega
+	parenthash        string
+	name              string
+	uploadUrl         string
+	aes_block         cipher.Block
+	iv                []byte
+	kiv               []byte
+	mac_data          []byte
+	mac_enc           cipher.BlockMode
+	kbytes            []byte
+	ukey              []uint32
+	mutex             sync.Mutex // to protect the following
+	chunks            []chunkSize
+	chunk_macs        [][]byte
+	completion_handle []byte
+}
 
-	defer func() {
-		if progress != nil {
-			close(*progress)
-		}
-	}()
-
+// Create a new Upload of name into parent of fileSize
+//
+// Call Chunks to find out how many chunks there are, then for id =
+// 0..chunks-1 Call ChunkLocation then UploadChunk.  Finally call
+// Finish() to receive the error status and the *Node.
+func (m *Mega) NewUpload(parent *Node, name string, fileSize int64) (*Upload, error) {
 	if parent == nil {
 		return nil, EARGS
 	}
 
 	var msg [1]UploadMsg
 	var res [1]UploadResp
-	var cmsg [1]UploadCompleteMsg
-	var cres [1]UploadCompleteResp
-	var infile *os.File
-	var fileSize int64
-	var mutex sync.Mutex
-
 	parenthash := parent.hash
-	info, err := os.Stat(srcpath)
-	if err == nil {
-		fileSize = info.Size()
-	}
-
-	infile, err = os.OpenFile(srcpath, os.O_RDONLY, 0666)
-	if err != nil {
-		return nil, err
-	}
 
 	msg[0].Cmd = "u"
 	msg[0].S = fileSize
-	completion_handle := []byte{}
 
-	request, _ := json.Marshal(msg)
+	request, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
 	result, err := m.api_request(request)
 	if err != nil {
 		return nil, err
@@ -915,14 +1010,209 @@ func (m *Mega) UploadFile(srcpath string, parent *Node, name string, progress *c
 	mac_enc := cipher.NewCBCEncrypter(aes_block, mac_data)
 	iv := a32_to_bytes([]uint32{ukey[4], ukey[5], ukey[4], ukey[5]})
 
-	sorted_chunks := []int{}
 	chunks := getChunkSizes(fileSize)
-	chunk_macs := make([][]byte, len(chunks))
 
-	for k, _ := range chunks {
-		sorted_chunks = append(sorted_chunks, k)
+	// File size is zero
+	// Do one empty request to get the completion handle
+	if len(chunks) == 0 {
+		chunks = append(chunks, chunkSize{position: 0, size: 0})
 	}
-	sort.Ints(sorted_chunks)
+
+	u := &Upload{
+		m:                 m,
+		parenthash:        parenthash,
+		name:              name,
+		uploadUrl:         uploadUrl,
+		aes_block:         aes_block,
+		iv:                iv,
+		kiv:               kiv,
+		mac_data:          mac_data,
+		mac_enc:           mac_enc,
+		kbytes:            kbytes,
+		ukey:              ukey,
+		chunks:            chunks,
+		chunk_macs:        make([][]byte, len(chunks)),
+		completion_handle: []byte{},
+	}
+	return u, nil
+}
+
+// Chunks returns The number of chunks in the upload.
+func (u *Upload) Chunks() int {
+	return len(u.chunks)
+}
+
+// ChunkLocation returns the position in the file and the size of the chunk
+func (u *Upload) ChunkLocation(id int) (position int64, size int, err error) {
+	if id < 0 || id >= len(u.chunks) {
+		return 0, 0, EARGS
+	}
+	return u.chunks[id].position, u.chunks[id].size, nil
+}
+
+// UploadChunk uploads the chunk of id
+func (u *Upload) UploadChunk(id int, chunk []byte) (err error) {
+	chk_start, chk_size, err := u.ChunkLocation(id)
+	if err != nil {
+		return err
+	}
+	if len(chunk) != chk_size {
+		return errors.New("upload chunk is wrong size")
+	}
+	ctr_iv := bytes_to_a32(u.kiv)
+	ctr_iv[2] = uint32(uint64(chk_start) / 0x1000000000)
+	ctr_iv[3] = uint32(chk_start / 0x10)
+	ctr_aes := cipher.NewCTR(u.aes_block, a32_to_bytes(ctr_iv))
+
+	enc := cipher.NewCBCEncrypter(u.aes_block, u.iv)
+
+	i := 0
+	block := make([]byte, 16)
+	paddedchunk := paddnull(chunk, 16)
+	for i = 0; i < len(paddedchunk); i += 16 {
+		copy(block[0:16], paddedchunk[i:i+16])
+		enc.CryptBlocks(block, block)
+	}
+
+	u.mutex.Lock()
+	if len(u.chunk_macs) > 0 {
+		u.chunk_macs[id] = make([]byte, 16)
+		copy(u.chunk_macs[id], block)
+	}
+	u.mutex.Unlock()
+
+	var rsp *http.Response
+	ctr_aes.XORKeyStream(chunk, chunk)
+	chk_url := fmt.Sprintf("%s/%d", u.uploadUrl, chk_start)
+	reader := bytes.NewBuffer(chunk)
+	req, _ := http.NewRequest("POST", chk_url, reader)
+
+	chunk_resp := []byte{}
+	for retry := 0; retry < u.m.retries+1; retry++ {
+		rsp, err = u.m.client.Do(req)
+		if err == nil {
+			if rsp.StatusCode == 200 {
+				break
+			} else {
+				_ = rsp.Body.Close()
+			}
+		}
+	}
+	if err != nil {
+		return err
+	}
+	if rsp == nil {
+		return errors.New("retries exceeded")
+	}
+
+	chunk_resp, err = ioutil.ReadAll(rsp.Body)
+	if err != nil {
+		return err
+	}
+
+	err = rsp.Body.Close()
+	if err != nil {
+		return err
+	}
+
+	if bytes.Equal(chunk_resp, nil) == false {
+		u.mutex.Lock()
+		u.completion_handle = chunk_resp
+		u.mutex.Unlock()
+	}
+
+	return nil
+}
+
+// Finish completes the upload and returns the created node
+func (u *Upload) Finish() (node *Node, err error) {
+	for _, v := range u.chunk_macs {
+		u.mac_enc.CryptBlocks(u.mac_data, v)
+	}
+
+	t := bytes_to_a32(u.mac_data)
+	meta_mac := []uint32{t[0] ^ t[1], t[2] ^ t[3]}
+
+	attr := FileAttr{u.name}
+
+	attr_data, err := encryptAttr(u.kbytes, attr)
+	if err != nil {
+		return nil, err
+	}
+
+	key := []uint32{u.ukey[0] ^ u.ukey[4], u.ukey[1] ^ u.ukey[5],
+		u.ukey[2] ^ meta_mac[0], u.ukey[3] ^ meta_mac[1],
+		u.ukey[4], u.ukey[5], meta_mac[0], meta_mac[1]}
+
+	buf := a32_to_bytes(key)
+	master_aes, err := aes.NewCipher(u.m.k)
+	if err != nil {
+		return nil, err
+	}
+	iv := a32_to_bytes([]uint32{0, 0, 0, 0})
+	enc := cipher.NewCBCEncrypter(master_aes, iv)
+	enc.CryptBlocks(buf[:16], buf[:16])
+	enc = cipher.NewCBCEncrypter(master_aes, iv)
+	enc.CryptBlocks(buf[16:], buf[16:])
+
+	var cmsg [1]UploadCompleteMsg
+	var cres [1]UploadCompleteResp
+
+	cmsg[0].Cmd = "p"
+	cmsg[0].T = u.parenthash
+	cmsg[0].N[0].H = string(u.completion_handle)
+	cmsg[0].N[0].T = FILE
+	cmsg[0].N[0].A = string(attr_data)
+	cmsg[0].N[0].K = string(base64urlencode(buf))
+
+	request, err := json.Marshal(cmsg)
+	if err != nil {
+		return nil, err
+	}
+	result, err := u.m.api_request(request)
+	if err != nil {
+		return nil, err
+	}
+
+	err = json.Unmarshal(result, &cres)
+	if err != nil {
+		return nil, err
+	}
+
+	u.m.FS.mutex.Lock()
+	defer u.m.FS.mutex.Unlock()
+	return u.m.addFSNode(cres[0].F[0])
+}
+
+// Upload a file to the filesystem
+func (m *Mega) UploadFile(srcpath string, parent *Node, name string, progress *chan int) (*Node, error) {
+	defer func() {
+		if progress != nil {
+			close(*progress)
+		}
+	}()
+
+	var infile *os.File
+	var fileSize int64
+
+	info, err := os.Stat(srcpath)
+	if err == nil {
+		fileSize = info.Size()
+	}
+
+	infile, err = os.OpenFile(srcpath, os.O_RDONLY, 0666)
+	if err != nil {
+		return nil, err
+	}
+
+	if name == "" {
+		name = filepath.Base(srcpath)
+	}
+
+	u, err := m.NewUpload(parent, name, fileSize)
+	if err != nil {
+		return nil, err
+	}
 
 	workch := make(chan int)
 	errch := make(chan error, m.ul_workers)
@@ -936,76 +1226,26 @@ func (m *Mega) UploadFile(srcpath string, parent *Node, name string, progress *c
 			defer wg.Done()
 
 			for id := range workch {
-				mutex.Lock()
-				chk_start := chunks[id].position
-				chk_size := chunks[id].size
-				mutex.Unlock()
-				ctr_iv := bytes_to_a32(kiv)
-				ctr_iv[2] = uint32(uint64(chk_start) / 0x1000000000)
-				ctr_iv[3] = uint32(chk_start / 0x10)
-				ctr_aes := cipher.NewCTR(aes_block, a32_to_bytes(ctr_iv))
-
+				chk_start, chk_size, err := u.ChunkLocation(id)
+				if err != nil {
+					errch <- err
+					return
+				}
 				chunk := make([]byte, chk_size)
-				n, _ := infile.ReadAt(chunk, int64(chk_start))
-				chunk = chunk[:n]
-
-				enc := cipher.NewCBCEncrypter(aes_block, iv)
-
-				i := 0
-				block := make([]byte, 16)
-				paddedchunk := paddnull(chunk, 16)
-				for i = 0; i < len(paddedchunk); i += 16 {
-					copy(block[0:16], paddedchunk[i:i+16])
-					enc.CryptBlocks(block, block)
-				}
-
-				mutex.Lock()
-				if len(chunk_macs) > 0 {
-					chunk_macs[id] = make([]byte, 16)
-					copy(chunk_macs[id], block)
-				}
-				mutex.Unlock()
-
-				var rsp *http.Response
-				var err error
-				ctr_aes.XORKeyStream(chunk, chunk)
-				chk_url := fmt.Sprintf("%s/%d", uploadUrl, chk_start)
-				reader := bytes.NewBuffer(chunk)
-				req, _ := http.NewRequest("POST", chk_url, reader)
-
-				chunk_resp := []byte{}
-				for retry := 0; retry < m.retries+1; retry++ {
-					rsp, err = m.client.Do(req)
-					if err == nil {
-						if rsp.StatusCode == 200 {
-							break
-						} else {
-							_ = rsp.Body.Close()
-						}
-					}
-				}
-
-				if rsp == nil {
-					errch <- errors.New("retries exceeded")
-					return
-				}
-
-				chunk_resp, err = ioutil.ReadAll(rsp.Body)
-				if err != nil {
+				n, err := infile.ReadAt(chunk, chk_start)
+				if err != nil && err != io.EOF {
 					errch <- err
 					return
 				}
-
-				err = rsp.Body.Close()
-				if err != nil {
-					errch <- err
+				if n != len(chunk) {
+					errch <- errors.New("chunk too short")
 					return
 				}
 
-				if bytes.Equal(chunk_resp, nil) == false {
-					mutex.Lock()
-					completion_handle = chunk_resp
-					mutex.Unlock()
+				err = u.UploadChunk(id, chunk)
+				if err != nil {
+					errch <- err
+					return
 				}
 
 				if progress != nil {
@@ -1015,22 +1255,16 @@ func (m *Mega) UploadFile(srcpath string, parent *Node, name string, progress *c
 		}()
 	}
 
+	// Place chunk download jobs to chan
 	err = nil
-	if len(chunks) == 0 {
-		// File size is zero
-		// Tell single worker to request for completion handle
-		chunks = append(chunks, chunkSize{position: 0, size: 0})
-		workch <- 0
-	} else {
-		// Place chunk download jobs to chan
-		for id := 0; id < len(chunks) && err == nil; {
-			select {
-			case workch <- id:
-				id++
-			case err = <-errch:
-			}
+	for id := 0; id < u.Chunks() && err == nil; {
+		select {
+		case workch <- id:
+			id++
+		case err = <-errch:
 		}
 	}
+
 	close(workch)
 
 	wg.Wait()
@@ -1039,53 +1273,7 @@ func (m *Mega) UploadFile(srcpath string, parent *Node, name string, progress *c
 		return nil, err
 	}
 
-	for _, v := range chunk_macs {
-		mac_enc.CryptBlocks(mac_data, v)
-	}
-
-	t := bytes_to_a32(mac_data)
-	meta_mac := []uint32{t[0] ^ t[1], t[2] ^ t[3]}
-
-	filename := filepath.Base(srcpath)
-	if name != "" {
-		filename = name
-	}
-	attr := FileAttr{filename}
-
-	attr_data, _ := encryptAttr(kbytes, attr)
-
-	key := []uint32{ukey[0] ^ ukey[4], ukey[1] ^ ukey[5],
-		ukey[2] ^ meta_mac[0], ukey[3] ^ meta_mac[1],
-		ukey[4], ukey[5], meta_mac[0], meta_mac[1]}
-
-	buf := a32_to_bytes(key)
-	master_aes, _ := aes.NewCipher(m.k)
-	iv = a32_to_bytes([]uint32{0, 0, 0, 0})
-	enc := cipher.NewCBCEncrypter(master_aes, iv)
-	enc.CryptBlocks(buf[:16], buf[:16])
-	enc = cipher.NewCBCEncrypter(master_aes, iv)
-	enc.CryptBlocks(buf[16:], buf[16:])
-
-	cmsg[0].Cmd = "p"
-	cmsg[0].T = parenthash
-	cmsg[0].N[0].H = string(completion_handle)
-	cmsg[0].N[0].T = FILE
-	cmsg[0].N[0].A = string(attr_data)
-	cmsg[0].N[0].K = string(base64urlencode(buf))
-
-	request, _ = json.Marshal(cmsg)
-	result, err = m.api_request(request)
-	if err != nil {
-		return nil, err
-	}
-
-	err = json.Unmarshal(result, &cres)
-	if err != nil {
-		return nil, err
-	}
-	node, err := m.addFSNode(cres[0].F[0])
-
-	return node, err
+	return u.Finish()
 }
 
 // Move a file from one location to another
