@@ -839,6 +839,10 @@ func (d *Download) DownloadChunk(id int) (chunk []byte, err error) {
 //
 // If all the chunks weren't downloaded then it will just return nil
 func (d *Download) Finish() (err error) {
+	// Can't check a 0 sized file
+	if len(d.chunk_macs) == 0 {
+		return nil
+	}
 	for _, v := range d.chunk_macs {
 		// If a chunk_macs hasn't been set then the whole file
 		// wasn't downloaded and we can't check it
