@@ -31,6 +31,8 @@ const (
 	UPLOAD_WORKERS       = 1
 	MAX_UPLOAD_WORKERS   = 30
 	TIMEOUT              = time.Second * 10
+	minSleepTime         = 10 * time.Millisecond // for retries
+	maxSleepTime         = 1 * time.Second       // for retries
 )
 
 type config struct {
@@ -365,6 +367,18 @@ func (m *Mega) SetDebugger(debugf func(format string, v ...interface{})) *Mega {
 	return m
 }
 
+// backOffSleep sleeps for the time pointed to then adjusts it by
+// doubling it up to a maximum of maxSleepTime.
+//
+// This produces a truncated exponential backoff sleep
+func backOffSleep(pt *time.Duration) {
+	time.Sleep(*pt)
+	*pt *= 2
+	if *pt > maxSleepTime {
+		*pt = maxSleepTime
+	}
+}
+
 // API request method
 func (m *Mega) api_request(r []byte) ([]byte, error) {
 	var err error
@@ -381,7 +395,12 @@ func (m *Mega) api_request(r []byte) ([]byte, error) {
 		url = fmt.Sprintf("%s&sid=%s", url, string(m.sid))
 	}
 
+	sleepTime := minSleepTime // inital backoff time
 	for i := 0; i < m.retries+1; i++ {
+		if i != 0 {
+			m.debugf("Retry API request %d/%d: %v", i, m.retries, err)
+			backOffSleep(&sleepTime)
+		}
 		resp, err = m.client.Post(url, "application/json", bytes.NewBuffer(r))
 		if err == nil {
 			if resp.StatusCode == 200 {
@@ -419,10 +438,8 @@ func (m *Mega) api_request(r []byte) ([]byte, error) {
 			}
 			err = parseError(emsg[0])
 			if err == EAGAIN {
-				time.Sleep(time.Millisecond * time.Duration(10))
 				continue
 			}
-
 			return buf, err
 		}
 
@@ -778,6 +795,7 @@ func (d *Download) DownloadChunk(id int) (chunk []byte, err error) {
 
 	var resource *http.Response
 	chunk_url := fmt.Sprintf("%s/%d-%d", d.resourceUrl, chk_start, chk_start+int64(chk_size)-1)
+	sleepTime := minSleepTime // inital backoff time
 	for retry := 0; retry < d.m.retries+1; retry++ {
 		resource, err = d.m.client.Get(chunk_url)
 		if err == nil {
@@ -789,6 +807,7 @@ func (d *Download) DownloadChunk(id int) (chunk []byte, err error) {
 			}
 		}
 		d.m.debugf("%s: Retry download chunk %d/%d: %v", d.src.name, retry, d.m.retries, err)
+		backOffSleep(&sleepTime)
 	}
 	if err != nil {
 		return nil, err
@@ -1085,6 +1104,7 @@ func (u *Upload) UploadChunk(id int, chunk []byte) (err error) {
 	req, _ := http.NewRequest("POST", chk_url, reader)
 
 	chunk_resp := []byte{}
+	sleepTime := minSleepTime // inital backoff time
 	for retry := 0; retry < u.m.retries+1; retry++ {
 		rsp, err = u.m.client.Do(req)
 		if err == nil {
@@ -1096,6 +1116,7 @@ func (u *Upload) UploadChunk(id int, chunk []byte) (err error) {
 			}
 		}
 		u.m.debugf("%s: Retry upload chunk %d/%d: %v", u.name, retry, u.m.retries, err)
+		backOffSleep(&sleepTime)
 	}
 	if err != nil {
 		return err
@@ -1506,7 +1527,7 @@ func (m *Mega) pollEvents() {
 		url := fmt.Sprintf("%s/sc?sn=%s&sid=%s", m.baseurl, m.ssn, string(m.sid))
 		resp, err := m.client.Post(url, "application/xml", nil)
 		if err != nil {
-			time.Sleep(time.Millisecond * 10)
+			time.Sleep(minSleepTime)
 			continue
 		}
 
@@ -1517,7 +1538,7 @@ func (m *Mega) pollEvents() {
 
 		buf, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
-			time.Sleep(time.Millisecond * 10)
+			time.Sleep(minSleepTime)
 			continue
 		}
 		err = resp.Body.Close()
@@ -1538,7 +1559,7 @@ func (m *Mega) pollEvents() {
 			} else {
 				err = parseError(emsg)
 				if err == EAGAIN {
-					time.Sleep(10 * time.Millisecond)
+					time.Sleep(minSleepTime)
 				} else if err != nil {
 					m.logf("pollEvents: Error received from server: %v", err)
 				}
@@ -1554,7 +1575,7 @@ func (m *Mega) pollEvents() {
 			}
 			rsp, err := m.client.Get(events.W)
 			if err != nil {
-				time.Sleep(time.Millisecond * 10)
+				time.Sleep(minSleepTime)
 			} else {
 				_ = rsp.Body.Close()
 			}
