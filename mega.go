@@ -1102,14 +1102,18 @@ func (u *Upload) UploadChunk(id int, chunk []byte) (err error) {
 	}
 
 	var rsp *http.Response
+	var req *http.Request
 	ctr_aes.XORKeyStream(chunk, chunk)
 	chk_url := fmt.Sprintf("%s/%d", u.uploadUrl, chk_start)
-	reader := bytes.NewBuffer(chunk)
-	req, _ := http.NewRequest("POST", chk_url, reader)
 
 	chunk_resp := []byte{}
 	sleepTime := minSleepTime // inital backoff time
 	for retry := 0; retry < u.m.retries+1; retry++ {
+		reader := bytes.NewBuffer(chunk)
+		req, err = http.NewRequest("POST", chk_url, reader)
+		if err != nil {
+			return err
+		}
 		rsp, err = u.m.client.Do(req)
 		if err == nil {
 			if rsp.StatusCode == 200 {
