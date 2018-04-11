@@ -2,7 +2,7 @@ build:
 	go build
 
 test:
-	go test -v
+	go test -cpu 4 -v -race
 
 # Get the build dependencies
 build_dep:

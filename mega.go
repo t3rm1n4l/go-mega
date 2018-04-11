@@ -740,9 +740,12 @@ func (m *Mega) NewDownload(src *Node) (*Download, error) {
 	var msg [1]DownloadMsg
 	var res [1]DownloadResp
 
+	m.FS.mutex.Lock()
 	msg[0].Cmd = "g"
 	msg[0].G = 1
 	msg[0].N = src.hash
+	key := src.meta.key
+	m.FS.mutex.Unlock()
 
 	request, err := json.Marshal(msg)
 	if err != nil {
@@ -758,14 +761,14 @@ func (m *Mega) NewDownload(src *Node) (*Download, error) {
 		return nil, err
 	}
 
-	_, err = decryptAttr(src.meta.key, []byte(res[0].Attr))
+	_, err = decryptAttr(key, []byte(res[0].Attr))
 	if err != nil {
 		return nil, err
 	}
 
 	chunks := getChunkSizes(int64(res[0].Size))
 
-	aes_block, err := aes.NewCipher(src.meta.key)
+	aes_block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
 	}
@@ -1685,14 +1688,11 @@ func (m *Mega) pollEvents() {
 }
 
 func (m *Mega) getLink(n *Node) (string, error) {
-	m.FS.mutex.Lock()
-	defer m.FS.mutex.Unlock()
-
 	var msg [1]GetLinkMsg
 	var res [1]string
 
 	msg[0].Cmd = "l"
-	msg[0].N = n.hash
+	msg[0].N = n.GetHash()
 
 	req, _ := json.Marshal(msg)
 	result, err := m.api_request(req)
@@ -1714,7 +1714,9 @@ func (m *Mega) Link(n *Node, includeKey bool) (string, error) {
 		return "", err
 	}
 	if includeKey {
+		m.FS.mutex.Lock()
 		key := string(base64urlencode(n.meta.compkey))
+		m.FS.mutex.Unlock()
 		return fmt.Sprintf("%v/#!%v!%v", BASE_DOWNLOAD_URL, id, key), nil
 	} else {
 		return fmt.Sprintf("%v/#!%v", BASE_DOWNLOAD_URL, id), nil
