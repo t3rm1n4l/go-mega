@@ -23,7 +23,7 @@ import (
 
 // Default settings
 const (
-	API_URL              = "https://eu.api.mega.co.nz"
+	API_URL              = "https://g.api.mega.co.nz"
 	BASE_DOWNLOAD_URL    = "https://mega.co.nz"
 	RETRIES              = 10
 	DOWNLOAD_WORKERS     = 3
