@@ -795,18 +795,17 @@ func (d *Download) DownloadChunk(id int) (chunk []byte, err error) {
 		return nil, err
 	}
 
-	var resource *http.Response
+	var resp *http.Response
 	chunk_url := fmt.Sprintf("%s/%d-%d", d.resourceUrl, chk_start, chk_start+int64(chk_size)-1)
 	sleepTime := minSleepTime // inital backoff time
 	for retry := 0; retry < d.m.retries+1; retry++ {
-		resource, err = d.m.client.Get(chunk_url)
+		resp, err = d.m.client.Get(chunk_url)
 		if err == nil {
-			if resource.StatusCode == 200 {
+			if resp.StatusCode == 200 {
 				break
-			} else {
-				err = errors.New("Http Status: " + resource.Status)
-				_ = resource.Body.Close()
 			}
+			err = errors.New("Http Status: " + resp.Status)
+			_ = resp.Body.Close()
 		}
 		d.m.debugf("%s: Retry download chunk %d/%d: %v", d.src.name, retry, d.m.retries, err)
 		backOffSleep(&sleepTime)
@@ -814,19 +813,22 @@ func (d *Download) DownloadChunk(id int) (chunk []byte, err error) {
 	if err != nil {
 		return nil, err
 	}
-	if resource == nil {
+	if resp == nil {
 		return nil, errors.New("retries exceeded")
 	}
 
-	chunk, err = ioutil.ReadAll(resource.Body)
+	chunk, err = ioutil.ReadAll(resp.Body)
+	if err != nil {
+		_ = resp.Body.Close()
+		return nil, err
+	}
+
+	err = resp.Body.Close()
 	if err != nil {
 		return nil, err
 	}
 
-	err = resource.Body.Close()
-	if err != nil {
-		return nil, err
-	}
+	// body is read and closed here
 
 	if len(chunk) != chk_size {
 		return nil, errors.New("wrong size for downloaded chunk")
@@ -1112,10 +1114,9 @@ func (u *Upload) UploadChunk(id int, chunk []byte) (err error) {
 		if err == nil {
 			if rsp.StatusCode == 200 {
 				break
-			} else {
-				err = errors.New("Http Status: " + rsp.Status)
-				_ = rsp.Body.Close()
 			}
+			err = errors.New("Http Status: " + rsp.Status)
+			_ = rsp.Body.Close()
 		}
 		u.m.debugf("%s: Retry upload chunk %d/%d: %v", u.name, retry, u.m.retries, err)
 		backOffSleep(&sleepTime)
@@ -1129,6 +1130,7 @@ func (u *Upload) UploadChunk(id int, chunk []byte) (err error) {
 
 	chunk_resp, err = ioutil.ReadAll(rsp.Body)
 	if err != nil {
+		_ = rsp.Body.Close()
 		return err
 	}
 
@@ -1525,22 +1527,35 @@ func (m *Mega) processDeleteNode(evRaw []byte) error {
 
 // Listen for server event notifications and play actions
 func (m *Mega) pollEvents() {
+	var err error
+	var resp *http.Response
+	sleepTime := minSleepTime // inital backoff time
 	for {
-		url := fmt.Sprintf("%s/sc?sn=%s&sid=%s", m.baseurl, m.ssn, string(m.sid))
-		resp, err := m.client.Post(url, "application/xml", nil)
 		if err != nil {
-			time.Sleep(minSleepTime)
+			m.debugf("pollEvents: error from server", err)
+			backOffSleep(&sleepTime)
+		} else {
+			// reset sleep time to minimum on success
+			sleepTime = minSleepTime
+		}
+
+		url := fmt.Sprintf("%s/sc?sn=%s&sid=%s", m.baseurl, m.ssn, string(m.sid))
+		resp, err = m.client.Post(url, "application/xml", nil)
+		if err != nil {
+			m.logf("pollEvents: Error fetching status: %s", err)
 			continue
 		}
 
 		if resp.StatusCode != 200 {
+			m.logf("pollEvents: Error from server: %s", resp.Status)
 			_ = resp.Body.Close()
 			continue
 		}
 
 		buf, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
-			time.Sleep(minSleepTime)
+			m.logf("pollEvents: Error reading body: %v", err)
+			_ = resp.Body.Close()
 			continue
 		}
 		err = resp.Body.Close()
@@ -1548,6 +1563,8 @@ func (m *Mega) pollEvents() {
 			m.logf("pollEvents: Error closing body: %v", err)
 			continue
 		}
+
+		// body is read and closed here
 
 		// First attempt to parse an array
 		var events Events
@@ -1561,7 +1578,6 @@ func (m *Mega) pollEvents() {
 			} else {
 				err = parseError(emsg)
 				if err == EAGAIN {
-					time.Sleep(minSleepTime)
 				} else if err != nil {
 					m.logf("pollEvents: Error received from server: %v", err)
 				}
@@ -1575,11 +1591,9 @@ func (m *Mega) pollEvents() {
 			if len(events.E) > 0 {
 				m.logf("pollEvents: Unexpected event with w set: %s", buf)
 			}
-			rsp, err := m.client.Get(events.W)
-			if err != nil {
-				time.Sleep(minSleepTime)
-			} else {
-				_ = rsp.Body.Close()
+			resp, err = m.client.Get(events.W)
+			if err == nil {
+				_ = resp.Body.Close()
 			}
 			continue
 		}
