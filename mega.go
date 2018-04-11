@@ -980,7 +980,7 @@ func (m *Mega) NewUpload(parent *Node, name string, fileSize int64) (*Upload, er
 
 	var msg [1]UploadMsg
 	var res [1]UploadResp
-	parenthash := parent.hash
+	parenthash := parent.GetHash()
 
 	msg[0].Cmd = "u"
 	msg[0].S = fileSize
