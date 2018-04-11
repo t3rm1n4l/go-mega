@@ -32,7 +32,7 @@ const (
 	MAX_UPLOAD_WORKERS   = 30
 	TIMEOUT              = time.Second * 10
 	minSleepTime         = 10 * time.Millisecond // for retries
-	maxSleepTime         = 1 * time.Second       // for retries
+	maxSleepTime         = 5 * time.Second       // for retries
 )
 
 type config struct {
