@@ -513,7 +513,7 @@ func (m *Mega) GetUser() (UserResp, error) {
 }
 
 // Get quota information
-func (m Mega) GetQuota() (QuotaResp, error) {
+func (m *Mega) GetQuota() (QuotaResp, error) {
 	var msg [1]QuotaMsg
 	var res [1]QuotaResp
 
