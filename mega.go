@@ -784,9 +784,11 @@ func (d *Download) DownloadChunk(id int) (chunk []byte, err error) {
 			if resource.StatusCode == 200 {
 				break
 			} else {
+				err = errors.New("Http Status: " + resource.Status)
 				_ = resource.Body.Close()
 			}
 		}
+		d.m.debugf("%s: Retry download chunk %d/%d: %v", d.src.name, retry, d.m.retries, err)
 	}
 	if err != nil {
 		return nil, err
@@ -1089,9 +1091,11 @@ func (u *Upload) UploadChunk(id int, chunk []byte) (err error) {
 			if rsp.StatusCode == 200 {
 				break
 			} else {
+				err = errors.New("Http Status: " + rsp.Status)
 				_ = rsp.Body.Close()
 			}
 		}
+		u.m.debugf("%s: Retry upload chunk %d/%d: %v", u.name, retry, u.m.retries, err)
 	}
 	if err != nil {
 		return err
@@ -1534,7 +1538,7 @@ func (m *Mega) pollEvents() {
 			} else {
 				err = parseError(emsg)
 				if err == EAGAIN {
-					time.Sleep(time.Millisecond * time.Duration(10))
+					time.Sleep(10 * time.Millisecond)
 				} else if err != nil {
 					m.logf("pollEvents: Error received from server: %v", err)
 				}
