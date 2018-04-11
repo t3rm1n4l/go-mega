@@ -110,6 +110,8 @@ type Mega struct {
 	// Loggers
 	logf   func(format string, v ...interface{})
 	debugf func(format string, v ...interface{})
+	// serialize the API requests
+	apiMu sync.Mutex
 }
 
 // Filesystem node types
@@ -380,13 +382,13 @@ func backOffSleep(pt *time.Duration) {
 }
 
 // API request method
-func (m *Mega) api_request(r []byte) ([]byte, error) {
-	var err error
+func (m *Mega) api_request(r []byte) (buf []byte, err error) {
 	var resp *http.Response
-	var buf []byte
-
+	// serialize the API requests
+	m.apiMu.Lock()
 	defer func() {
 		m.sn++
+		m.apiMu.Unlock()
 	}()
 
 	url := fmt.Sprintf("%s/cs?id=%d", m.baseurl, m.sn)
@@ -402,26 +404,26 @@ func (m *Mega) api_request(r []byte) ([]byte, error) {
 			backOffSleep(&sleepTime)
 		}
 		resp, err = m.client.Post(url, "application/json", bytes.NewBuffer(r))
-		if err == nil {
-			if resp.StatusCode == 200 {
-				goto success
-			} else {
-				_ = resp.Body.Close()
-			}
-
-			err = errors.New("Http Status:" + resp.Status)
+		if err != nil {
+			continue
 		}
-
+		if resp.StatusCode != 200 {
+			// err must be not-nil on a continue
+			err = errors.New("Http Status: " + resp.Status)
+			_ = resp.Body.Close()
+			continue
+		}
+		buf, err = ioutil.ReadAll(resp.Body)
+		if err != nil {
+			_ = resp.Body.Close()
+			continue
+		}
+		err = resp.Body.Close()
 		if err != nil {
 			continue
 		}
 
-	success:
-		buf, _ = ioutil.ReadAll(resp.Body)
-		err = resp.Body.Close()
-		if err != nil {
-			return nil, err
-		}
+		// at this point the body is read and closed
 
 		if bytes.HasPrefix(buf, []byte("[")) == false && bytes.HasPrefix(buf, []byte("-")) == false {
 			return nil, EBADRESP
