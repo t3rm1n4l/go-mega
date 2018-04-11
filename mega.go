@@ -680,12 +680,14 @@ type Download struct {
 	resourceUrl string
 	aes_block   cipher.Block
 	iv          []byte
-	mac_data    []byte
 	mac_enc     cipher.BlockMode
 	mutex       sync.Mutex // to protect the following
 	chunks      []chunkSize
 	chunk_macs  [][]byte
 }
+
+// an all nil IV for mac calculations
+var zero_iv = make([]byte, 16)
 
 // Create a new Download from the src Node
 //
@@ -730,8 +732,7 @@ func (m *Mega) NewDownload(src *Node) (*Download, error) {
 		return nil, err
 	}
 
-	mac_data := a32_to_bytes([]uint32{0, 0, 0, 0})
-	mac_enc := cipher.NewCBCEncrypter(aes_block, mac_data)
+	mac_enc := cipher.NewCBCEncrypter(aes_block, zero_iv)
 	t := bytes_to_a32(src.meta.iv)
 	iv := a32_to_bytes([]uint32{t[0], t[1], t[0], t[1]})
 
@@ -741,7 +742,6 @@ func (m *Mega) NewDownload(src *Node) (*Download, error) {
 		resourceUrl: res[0].G,
 		aes_block:   aes_block,
 		iv:          iv,
-		mac_data:    mac_data,
 		mac_enc:     mac_enc,
 		chunks:      chunks,
 		chunk_macs:  make([][]byte, len(chunks)),
@@ -843,16 +843,17 @@ func (d *Download) Finish() (err error) {
 	if len(d.chunk_macs) == 0 {
 		return nil
 	}
+	mac_data := make([]byte, 16)
 	for _, v := range d.chunk_macs {
 		// If a chunk_macs hasn't been set then the whole file
 		// wasn't downloaded and we can't check it
 		if v == nil {
 			return nil
 		}
-		d.mac_enc.CryptBlocks(d.mac_data, v)
+		d.mac_enc.CryptBlocks(mac_data, v)
 	}
 
-	tmac := bytes_to_a32(d.mac_data)
+	tmac := bytes_to_a32(mac_data)
 	if bytes.Equal(a32_to_bytes([]uint32{tmac[0] ^ tmac[1], tmac[2] ^ tmac[3]}), d.src.meta.mac) == false {
 		return EMACMISMATCH
 	}
@@ -958,7 +959,6 @@ type Upload struct {
 	aes_block         cipher.Block
 	iv                []byte
 	kiv               []byte
-	mac_data          []byte
 	mac_enc           cipher.BlockMode
 	kbytes            []byte
 	ukey              []uint32
@@ -1010,8 +1010,7 @@ func (m *Mega) NewUpload(parent *Node, name string, fileSize int64) (*Upload, er
 	kiv := a32_to_bytes([]uint32{ukey[4], ukey[5], 0, 0})
 	aes_block, _ := aes.NewCipher(kbytes)
 
-	mac_data := a32_to_bytes([]uint32{0, 0, 0, 0})
-	mac_enc := cipher.NewCBCEncrypter(aes_block, mac_data)
+	mac_enc := cipher.NewCBCEncrypter(aes_block, zero_iv)
 	iv := a32_to_bytes([]uint32{ukey[4], ukey[5], ukey[4], ukey[5]})
 
 	chunks := getChunkSizes(fileSize)
@@ -1030,7 +1029,6 @@ func (m *Mega) NewUpload(parent *Node, name string, fileSize int64) (*Upload, er
 		aes_block:         aes_block,
 		iv:                iv,
 		kiv:               kiv,
-		mac_data:          mac_data,
 		mac_enc:           mac_enc,
 		kbytes:            kbytes,
 		ukey:              ukey,
@@ -1078,13 +1076,6 @@ func (u *Upload) UploadChunk(id int, chunk []byte) (err error) {
 		enc.CryptBlocks(block, block)
 	}
 
-	u.mutex.Lock()
-	if len(u.chunk_macs) > 0 {
-		u.chunk_macs[id] = make([]byte, 16)
-		copy(u.chunk_macs[id], block)
-	}
-	u.mutex.Unlock()
-
 	var rsp *http.Response
 	ctr_aes.XORKeyStream(chunk, chunk)
 	chk_url := fmt.Sprintf("%s/%d", u.uploadUrl, chk_start)
@@ -1125,16 +1116,25 @@ func (u *Upload) UploadChunk(id int, chunk []byte) (err error) {
 		u.mutex.Unlock()
 	}
 
+	// Update chunk MACs on success only
+	u.mutex.Lock()
+	if len(u.chunk_macs) > 0 {
+		u.chunk_macs[id] = make([]byte, 16)
+		copy(u.chunk_macs[id], block)
+	}
+	u.mutex.Unlock()
+
 	return nil
 }
 
 // Finish completes the upload and returns the created node
 func (u *Upload) Finish() (node *Node, err error) {
+	mac_data := make([]byte, 16)
 	for _, v := range u.chunk_macs {
-		u.mac_enc.CryptBlocks(u.mac_data, v)
+		u.mac_enc.CryptBlocks(mac_data, v)
 	}
 
-	t := bytes_to_a32(u.mac_data)
+	t := bytes_to_a32(mac_data)
 	meta_mac := []uint32{t[0] ^ t[1], t[2] ^ t[3]}
 
 	attr := FileAttr{u.name}
@@ -1153,10 +1153,9 @@ func (u *Upload) Finish() (node *Node, err error) {
 	if err != nil {
 		return nil, err
 	}
-	iv := a32_to_bytes([]uint32{0, 0, 0, 0})
-	enc := cipher.NewCBCEncrypter(master_aes, iv)
+	enc := cipher.NewCBCEncrypter(master_aes, zero_iv)
 	enc.CryptBlocks(buf[:16], buf[:16])
-	enc = cipher.NewCBCEncrypter(master_aes, iv)
+	enc = cipher.NewCBCEncrypter(master_aes, zero_iv)
 	enc.CryptBlocks(buf[16:], buf[16:])
 
 	var cmsg [1]UploadCompleteMsg
