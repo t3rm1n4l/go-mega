@@ -12,9 +12,9 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
-	"regexp"
 )
 
 func newHttpClient(timeout time.Duration) *http.Client {
@@ -288,7 +288,7 @@ func decryptAttr(key []byte, data []byte) (attr FileAttr, err error) {
 	r, _ := regexp.Compile(`{".*"}`)
 	if string(buf[:4]) == "MEGA" {
 		str := strings.TrimRight(string(buf[4:]), "\x00")
-		str = r.FindString(str)		
+		str = r.FindString(str)
 		err = json.Unmarshal([]byte(str), &attr)
 	}
 	return attr, err
