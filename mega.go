@@ -1617,6 +1617,11 @@ func (m *Mega) UploadFile(srcpath string, parent *Node, name string, progress *c
 		return nil, err
 	}
 
+	err = infile.Close()
+	if err != nil {
+		return nil, err
+	}
+
 	return u.Finish()
 }
 
