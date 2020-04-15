@@ -1550,7 +1550,7 @@ func (m *Mega) UploadFile(srcpath string, parent *Node, name string, progress *c
 	}
 	defer func() {
 		e := infile.Close()
-		if err != nil {
+		if err == nil {
 			err = e
 		}
 	}()
