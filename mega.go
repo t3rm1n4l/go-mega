@@ -1276,19 +1276,14 @@ func (d *Download) Finish() (err error) {
 }
 
 // Download file from filesystem reporting progress if not nil
-func (m *Mega) DownloadFile(src *Node, dstpath string, progress *chan int) error {
+func (m *Mega) downloadFile(d *Download, dstpath string, progress *chan int) error {
 	defer func() {
 		if progress != nil {
 			close(*progress)
 		}
 	}()
 
-	d, err := m.NewDownload(src)
-	if err != nil {
-		return err
-	}
-
-	_, err = os.Stat(dstpath)
+	_, err := os.Stat(dstpath)
 	if os.IsExist(err) {
 		err = os.Remove(dstpath)
 		if err != nil {
@@ -1362,6 +1357,28 @@ func (m *Mega) DownloadFile(src *Node, dstpath string, progress *chan int) error
 	}
 
 	return d.Finish()
+}
+
+// Download file from filesystem reporting progress if not nil
+func (m *Mega) DownloadFile(src *Node, dstpath string, progress *chan int) error {
+	d, err := m.NewDownload(src)
+
+	if err != nil {
+		return err
+	}
+
+	return m.downloadFile(d, dstpath, progress)
+}
+
+// Download public file from filesystem reporting progress if not nil
+func (m *Mega) DownloadPublicFile(hash, key, dstpath string, progress *chan int) error {
+	d, err := m.NewPublicDownload(hash, key)
+
+	if err != nil {
+		return err
+	}
+
+	return m.downloadFile(d, dstpath, progress)
 }
 
 // Upload contains the internal state of a upload
