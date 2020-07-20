@@ -1037,6 +1037,112 @@ func (m *Mega) NewDownload(src *Node) (*Download, error) {
 	return d, nil
 }
 
+// Create a new public Download from the hash and key
+//
+// Call Chunks to find out how many chunks there are, then for id =
+// 0..chunks-1 call DownloadChunk.  Finally call Finish() to receive
+// the error status.
+func (m *Mega) NewPublicDownload(hash, key string) (*Download, error) {
+	var msg [1]DownloadMsg
+	var res [1]DownloadResp
+
+	// XXX: Do we need this mutex here?
+	m.FS.mutex.Lock()
+	msg[0].Cmd = "g"
+	msg[0].G = 1
+	msg[0].P = hash
+	m.FS.mutex.Unlock()
+
+	request, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
+	result, err := m.api_request(request)
+	if err != nil {
+		return nil, err
+	}
+
+	err = json.Unmarshal(result, &res)
+	if err != nil {
+		return nil, err
+	}
+
+	// DownloadResp has an embedded error in it for some reason
+	if res[0].Err != 0 {
+		return nil, parseError(res[0].Err)
+	}
+
+	rawkey, err := base64urldecode(key)
+	if err != nil {
+		return nil, err
+	}
+
+	compkey, err := bytes_to_a32(rawkey)
+	if err != nil {
+		return nil, err
+	}
+
+	aes_key, err := a32_to_bytes([]uint32{compkey[0] ^ compkey[4], compkey[1] ^ compkey[5], compkey[2] ^ compkey[6], compkey[3] ^ compkey[7]})
+	if err != nil {
+		return nil, err
+	}
+
+	attr, err := decryptAttr(aes_key, res[0].Attr)
+	if err != nil {
+		return nil, err
+	}
+
+	chunks := getChunkSizes(int64(res[0].Size))
+
+	aes_block, err := aes.NewCipher(aes_key)
+	if err != nil {
+		return nil, err
+	}
+
+	mac_enc := cipher.NewCBCEncrypter(aes_block, zero_iv)
+
+	var meta NodeMeta
+	meta.key = aes_key
+	meta.iv, err = a32_to_bytes([]uint32{compkey[4], compkey[5], 0, 0})
+	if err != nil {
+		return nil, err
+	}
+	meta.mac, err = a32_to_bytes([]uint32{compkey[6], compkey[7]})
+	if err != nil {
+		return nil, err
+	}
+	meta.compkey, err = a32_to_bytes(compkey)
+	if err != nil {
+		return nil, err
+	}
+
+	t, err := bytes_to_a32(meta.iv)
+	if err != nil {
+		return nil, err
+	}
+	iv, err := a32_to_bytes([]uint32{t[0], t[1], t[0], t[1]})
+	if err != nil {
+		return nil, err
+	}
+
+	d := &Download{
+		m: m,
+		src: &Node{
+			fs:   m.FS,
+			name: attr.Name,
+			hash: hash,
+			meta: meta,
+		},
+		resourceUrl: res[0].G,
+		aes_block:   aes_block,
+		iv:          iv,
+		mac_enc:     mac_enc,
+		chunks:      chunks,
+		chunk_macs:  make([][]byte, len(chunks)),
+	}
+	return d, nil
+}
+
 // Chunks returns The number of chunks in the download.
 func (d *Download) Chunks() int {
 	return len(d.chunks)
