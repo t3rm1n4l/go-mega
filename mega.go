@@ -580,13 +580,13 @@ func (m *Mega) login(email string, passwd string, multiFactor string) error {
 }
 
 // Authenticate and start a session
-func (m *Mega) Login(email string, passwd string) error {
+func (m *Mega) Login(email string, passwd string, multiFactor string) error {
 	err := m.prelogin(email)
 	if err != nil {
 		return err
 	}
 
-	err = m.login(email, passwd)
+	err = m.login(email, passwd, multiFactor)
 	if err != nil {
 		return err
 	}
