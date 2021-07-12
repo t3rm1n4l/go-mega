@@ -30,8 +30,17 @@ type LoginResp struct {
 	U          string `json:"u"`
 }
 
+type SessionLoginMsg struct {
+	Cmd        string `json:"a"`
+	SessionKey string `json:"sek,omitempty"`
+	Si         string `json:"si,omitempty"`
+}
+
 type UserMsg struct {
 	Cmd string `json:"a"`
+}
+
+type KeyResp struct {
 }
 
 type UserResp struct {
