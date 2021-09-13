@@ -531,9 +531,8 @@ func (m *Mega) login(email string, passwd string, multiFactor string) error {
 
 	msg[0].Cmd = "us"
 	msg[0].User = email
-	if multiFactor != "" {
-		msg[0].Mfa = multiFactor
-	}
+	msg[0].Mfa = multiFactor
+
 	if m.accountVersion == 1 {
 		msg[0].Handle = uhandle
 	} else {
@@ -583,27 +582,7 @@ func (m *Mega) login(email string, passwd string, multiFactor string) error {
 
 // Authenticate and start a session
 func (m *Mega) Login(email string, passwd string) error {
-	err := m.prelogin(email)
-	if err != nil {
-		return err
-	}
-
-	err = m.login(email, passwd, "")
-	if err != nil {
-		return err
-	}
-
-	waitEvent := m.WaitEventsStart()
-
-	err = m.getFileSystem()
-	if err != nil {
-		return err
-	}
-
-	// Wait until the all the pending events have been received
-	m.WaitEvents(waitEvent, 5*time.Second)
-
-	return nil
+	return m.MultiFactorLogin(email, passwd, "")
 }
 
 // MultiFactorLogin - Authenticate and start a session with 2FA
