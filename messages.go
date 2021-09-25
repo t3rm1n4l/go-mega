@@ -128,6 +128,7 @@ type DownloadResp struct {
 
 type UploadMsg struct {
 	Cmd string `json:"a"`
+	SSL int64  `json:"ssl"`
 	S   int64  `json:"s"`
 }
 

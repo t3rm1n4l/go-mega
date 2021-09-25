@@ -1291,6 +1291,7 @@ func (m *Mega) NewUpload(parent *Node, name string, fileSize int64) (*Upload, er
 	parenthash := parent.GetHash()
 
 	msg[0].Cmd = "u"
+	msg[0].SSL = 2 // force ssl for upload file
 	msg[0].S = fileSize
 
 	request, err := json.Marshal(msg)
