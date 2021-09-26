@@ -1,6 +1,11 @@
 package mega
 
+// #include <string.h>
+import "C"
+
 import (
+	"os"
+	"io"
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
@@ -15,6 +20,15 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"hash/crc32"
+	"unsafe"
+)
+
+const (
+	MAXFULL              = 8192
+	CRC_ARRAY_LENGTH     = 4
+	CRC_SIZE             = 4 * CRC_ARRAY_LENGTH // uint32 size * CRC_ARRAY_LENGTH
+	FINGERPRINT_MAX_SIZE = CRC_SIZE + 1 + 8     // CRC_SIZE + 1 + int64 size
 )
 
 func newHttpClient(timeout time.Duration) *http.Client {
@@ -373,4 +387,102 @@ func randString(l int) (string, error) {
 	enc.Encode(d, b)
 	d = d[:l]
 	return string(d), nil
+}
+
+func computeCRC(infile *os.File, fileSize int64) ([]uint32) {
+	// https://github.com/gpailler/MegaApiClient/blob/c695f4ca36bb306f8a14b1774e783977c8ea2319/MegaApiClient/Serialization/Attributes.cs#L75
+	// https://github.com/meganz/sdk/blob/d4b462efc702a9c645e90c202b57e14da3de3501/src/filefingerprint.cpp#L118
+	infile.Seek(0, 0)
+
+	crc := make([]uint32, CRC_ARRAY_LENGTH)
+	crcBuff := make([]byte, CRC_SIZE)
+
+	if fileSize <= CRC_SIZE {
+		_, err := infile.ReadAt(crcBuff, 0)
+		if err != nil && err != io.EOF {
+			return nil
+		}
+		// TODO find a solution in golang
+		C.memcpy(unsafe.Pointer(&crc[0]), unsafe.Pointer(&crcBuff[0]), CRC_SIZE)
+	} else if fileSize <= MAXFULL {
+		fileBuff := make([]byte, fileSize)
+
+                _, err := infile.ReadAt(fileBuff, 0)
+                if err != nil && err != io.EOF {
+                        return nil
+                }
+		for iNdx := 0; iNdx < CRC_ARRAY_LENGTH; iNdx++ {
+			begin := int64(iNdx) * fileSize / CRC_ARRAY_LENGTH
+			end := (int64(iNdx) + 1) * fileSize / CRC_ARRAY_LENGTH
+
+			crc[iNdx] = htonl(crc32.ChecksumIEEE(fileBuff[begin : end]))
+		}
+	} else {
+		abBlock := make([]byte, 4 * CRC_SIZE)
+		iBlocks := MAXFULL / (len(abBlock) * CRC_ARRAY_LENGTH)
+		var iCrc uint32
+		for iNdx := 0; iNdx < CRC_ARRAY_LENGTH; iNdx++ {
+			iCrc = 0
+			for iNdx2 := 0; iNdx2 < iBlocks; iNdx2++ {
+				offset := (fileSize - int64(len(abBlock))) * int64(iNdx * iBlocks + iNdx2) / int64(CRC_ARRAY_LENGTH * iBlocks - 1)
+				_, err := infile.ReadAt(abBlock, offset)
+				if err != nil && err != io.EOF {
+					return nil
+				}
+				iCrc = crc32.Update(iCrc, crc32.IEEETable, abBlock)
+			}
+			crc[iNdx] = htonl(iCrc)
+		}
+	}
+
+	return crc
+}
+
+func detectEndian() binary.ByteOrder {
+	buf := [2]byte{}
+	*(*uint16)(unsafe.Pointer(&buf[0])) = uint16(0xABCD)
+
+	switch buf {
+		case [2]byte{0xCD, 0xAB}:
+			return binary.LittleEndian
+		case [2]byte{0xAB, 0xCD}:
+			return binary.BigEndian
+		default:
+			panic("Could not determine native endianness.")
+	}
+}
+
+func htonl(val uint32) uint32 {
+	tmp := make([]byte, 4)
+	if detectEndian() == binary.LittleEndian {
+		binary.LittleEndian.PutUint32(tmp, val)
+	} else {
+		binary.BigEndian.PutUint32(tmp, val)
+	}
+	return binary.BigEndian.Uint32(tmp)
+}
+
+func serializeInt64(val int64) []byte {
+	abRet := make([]byte, 9) //size of long + 1
+	iNdx := 0
+
+	for val != 0 {
+		iNdx++
+		abRet[iNdx] = byte(val & 0xFF)
+		val >>= 8
+	}
+	abRet[0] = byte(iNdx)
+	return abRet
+}
+
+func deserializeInt64(val []byte) (int64, error) {
+	var result int64
+	iLen := int(val[0])
+	if iLen > 8 {
+		return -1, errors.New("Wrong mtime attributes")
+	}
+	for iNdx := iLen; iNdx > 0; iNdx-- {
+		result = (result << 8) + int64(val[iNdx])
+	}
+	return result, nil
 }
