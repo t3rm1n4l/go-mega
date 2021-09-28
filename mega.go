@@ -1862,8 +1862,10 @@ func (m *Mega) deserializeDate(attr FileAttr, node *Node) {
 	if attr.Fingerprint != "" {
 		node.fingprnt = attr.Fingerprint
 		abData, _ := b64.StdEncoding.DecodeString(attr.Fingerprint)
-		iMTime, _ := deserializeInt64(abData[CRC_SIZE:])
-		node.mtime = time.Unix(iMTime, 0)
+		if len(abData) >= (CRC_SIZE + 2) { // array length + almost 2 byte (one for length and one for date)
+			iMTime, _ := deserializeInt64(abData[CRC_SIZE:])
+			node.mtime = time.Unix(iMTime, 0)
+		}
 	}
 }
 
