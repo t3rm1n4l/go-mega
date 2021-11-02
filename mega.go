@@ -1491,11 +1491,11 @@ func (u *Upload) Finish(infile *os.File, fileSize int64, modificationTime int64)
 	meta_mac := []uint32{t[0] ^ t[1], t[2] ^ t[3]}
 
 	crc := computeCRC(infile, fileSize)
-	fingerprintBuf := make([]byte, FINGERPRINT_MAX_SIZE)
-	C.memcpy(unsafe.Pointer(&fingerprintBuf[0]), unsafe.Pointer(&crc[0]), CRC_SIZE)
+	fingerprintBuf := make([]byte, fingerPrintMaxSize)
+	C.memcpy(unsafe.Pointer(&fingerprintBuf[0]), unsafe.Pointer(&crc[0]), crcSize)
 	aDate := serializeInt64(modificationTime)
-	C.memcpy(unsafe.Pointer(&fingerprintBuf[CRC_SIZE]), unsafe.Pointer(&aDate[0]), 8)
-	aFingerBuff := make([]byte, CRC_SIZE + 1 + aDate[0])
+	C.memcpy(unsafe.Pointer(&fingerprintBuf[crcSize]), unsafe.Pointer(&aDate[0]), 8)
+	aFingerBuff := make([]byte, crcSize + 1 + aDate[0])
 	copy(aFingerBuff, fingerprintBuf)
 
 	attr := FileAttr{u.name, b64.StdEncoding.EncodeToString(aFingerBuff)}
@@ -1862,8 +1862,8 @@ func (m *Mega) deserializeDate(attr FileAttr, node *Node) {
 	if attr.Fingerprint != "" {
 		node.fingprnt = attr.Fingerprint
 		abData, _ := b64.StdEncoding.DecodeString(attr.Fingerprint)
-		if len(abData) >= (CRC_SIZE + 2) { // array length + almost 2 byte (one for length and one for date)
-			iMTime, _ := deserializeInt64(abData[CRC_SIZE:])
+		if len(abData) >= (crcSize + 2) { // array length + almost 2 byte (one for length and one for date)
+			iMTime, _ := deserializeInt64(abData[crcSize:])
 			node.mtime = time.Unix(iMTime, 0)
 		}
 	}

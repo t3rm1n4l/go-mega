@@ -25,10 +25,10 @@ import (
 )
 
 const (
-	MAXFULL              = 8192
-	CRC_ARRAY_LENGTH     = 4
-	CRC_SIZE             = 4 * CRC_ARRAY_LENGTH // uint32 size * CRC_ARRAY_LENGTH
-	FINGERPRINT_MAX_SIZE = CRC_SIZE + 1 + 8     // CRC_SIZE + 1 + int64 size
+	maxFull              = 8192
+	crcArrayLength       = 4
+	crcSize              = 4 * crcArrayLength // uint32 size * crcArrayLength
+	fingerPrintMaxSize   = crcSize + 1 + 8     // crcSize + 1 + int64 size
 )
 
 func newHttpClient(timeout time.Duration) *http.Client {
@@ -394,37 +394,37 @@ func computeCRC(infile *os.File, fileSize int64) ([]uint32) {
 	// https://github.com/meganz/sdk/blob/d4b462efc702a9c645e90c202b57e14da3de3501/src/filefingerprint.cpp#L118
 	infile.Seek(0, 0)
 
-	crc := make([]uint32, CRC_ARRAY_LENGTH)
-	crcBuff := make([]byte, CRC_SIZE)
+	crc := make([]uint32, crcArrayLength)
+	crcBuff := make([]byte, crcSize)
 
-	if fileSize <= CRC_SIZE {
+	if fileSize <= crcSize {
 		_, err := infile.ReadAt(crcBuff, 0)
 		if err != nil && err != io.EOF {
 			return nil
 		}
 		// TODO find a solution in golang
-		C.memcpy(unsafe.Pointer(&crc[0]), unsafe.Pointer(&crcBuff[0]), CRC_SIZE)
-	} else if fileSize <= MAXFULL {
+		C.memcpy(unsafe.Pointer(&crc[0]), unsafe.Pointer(&crcBuff[0]), crcSize)
+	} else if fileSize <= maxFull {
 		fileBuff := make([]byte, fileSize)
 
                 _, err := infile.ReadAt(fileBuff, 0)
                 if err != nil && err != io.EOF {
                         return nil
                 }
-		for iNdx := 0; iNdx < CRC_ARRAY_LENGTH; iNdx++ {
-			begin := int64(iNdx) * fileSize / CRC_ARRAY_LENGTH
-			end := (int64(iNdx) + 1) * fileSize / CRC_ARRAY_LENGTH
+		for iNdx := 0; iNdx < crcArrayLength; iNdx++ {
+			begin := int64(iNdx) * fileSize / crcArrayLength
+			end := (int64(iNdx) + 1) * fileSize / crcArrayLength
 
 			crc[iNdx] = htonl(crc32.ChecksumIEEE(fileBuff[begin : end]))
 		}
 	} else {
-		abBlock := make([]byte, 4 * CRC_SIZE)
-		iBlocks := MAXFULL / (len(abBlock) * CRC_ARRAY_LENGTH)
+		abBlock := make([]byte, 4 * crcSize)
+		iBlocks := maxFull / (len(abBlock) * crcArrayLength)
 		var iCrc uint32
-		for iNdx := 0; iNdx < CRC_ARRAY_LENGTH; iNdx++ {
+		for iNdx := 0; iNdx < crcArrayLength; iNdx++ {
 			iCrc = 0
 			for iNdx2 := 0; iNdx2 < iBlocks; iNdx2++ {
-				offset := (fileSize - int64(len(abBlock))) * int64(iNdx * iBlocks + iNdx2) / int64(CRC_ARRAY_LENGTH * iBlocks - 1)
+				offset := (fileSize - int64(len(abBlock))) * int64(iNdx * iBlocks + iNdx2) / int64(crcArrayLength * iBlocks - 1)
 				_, err := infile.ReadAt(abBlock, offset)
 				if err != nil && err != io.EOF {
 					return nil
