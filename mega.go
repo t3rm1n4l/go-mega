@@ -1,5 +1,8 @@
 package mega
 
+// #include <string.h>
+import "C"
+
 import (
 	"bytes"
 	"crypto/aes"
@@ -20,6 +23,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unsafe"
+	b64 "encoding/base64"
 
 	"golang.org/x/crypto/pbkdf2"
 )
@@ -145,6 +150,8 @@ type Node struct {
 	size     int64
 	ts       time.Time
 	meta     NodeMeta
+	mtime    time.Time
+	fingprnt string
 }
 
 func (n *Node) removeChild(c *Node) bool {
@@ -191,6 +198,12 @@ func (n *Node) GetTimeStamp() time.Time {
 	n.fs.mutex.Lock()
 	defer n.fs.mutex.Unlock()
 	return n.ts
+}
+
+func (n *Node) GetModificationTime() time.Time {
+	n.fs.mutex.Lock()
+	defer n.fs.mutex.Unlock()
+	return n.mtime
 }
 
 func (n *Node) GetName() string {
@@ -897,6 +910,7 @@ func (m *Mega) addFSNode(itm FSNode) (*Node, error) {
 	node.hash = itm.Hash
 	node.parent = parent
 	node.ntype = itm.T
+	m.deserializeDate(attr, node)
 
 	return node, nil
 }
@@ -1291,6 +1305,7 @@ func (m *Mega) NewUpload(parent *Node, name string, fileSize int64) (*Upload, er
 	parenthash := parent.GetHash()
 
 	msg[0].Cmd = "u"
+	msg[0].SSL = 2 // force ssl for upload file
 	msg[0].S = fileSize
 
 	request, err := json.Marshal(msg)
@@ -1463,7 +1478,7 @@ func (u *Upload) UploadChunk(id int, chunk []byte) (err error) {
 }
 
 // Finish completes the upload and returns the created node
-func (u *Upload) Finish() (node *Node, err error) {
+func (u *Upload) Finish(infile *os.File, fileSize int64, modificationTime int64) (node *Node, err error) {
 	mac_data := make([]byte, 16)
 	for _, v := range u.chunk_macs {
 		u.mac_enc.CryptBlocks(mac_data, v)
@@ -1475,7 +1490,15 @@ func (u *Upload) Finish() (node *Node, err error) {
 	}
 	meta_mac := []uint32{t[0] ^ t[1], t[2] ^ t[3]}
 
-	attr := FileAttr{u.name}
+	crc := computeCRC(infile, fileSize)
+	fingerprintBuf := make([]byte, fingerPrintMaxSize)
+	C.memcpy(unsafe.Pointer(&fingerprintBuf[0]), unsafe.Pointer(&crc[0]), crcSize)
+	aDate := serializeInt64(modificationTime)
+	C.memcpy(unsafe.Pointer(&fingerprintBuf[crcSize]), unsafe.Pointer(&aDate[0]), 8)
+	aFingerBuff := make([]byte, crcSize + 1 + aDate[0])
+	copy(aFingerBuff, fingerprintBuf)
+
+	attr := FileAttr{u.name, b64.StdEncoding.EncodeToString(aFingerBuff)}
 
 	attr_data, err := encryptAttr(u.kbytes, attr)
 	if err != nil {
@@ -1538,10 +1561,12 @@ func (m *Mega) UploadFile(srcpath string, parent *Node, name string, progress *c
 
 	var infile *os.File
 	var fileSize int64
+	var modificationTime int64
 
 	info, err := os.Stat(srcpath)
 	if err == nil {
 		fileSize = info.Size()
+		modificationTime = info.ModTime().Unix()
 	}
 
 	infile, err = os.OpenFile(srcpath, os.O_RDONLY, 0666)
@@ -1623,7 +1648,7 @@ func (m *Mega) UploadFile(srcpath string, parent *Node, name string, progress *c
 		return nil, err
 	}
 
-	return u.Finish()
+	return u.Finish(infile, fileSize, modificationTime)
 }
 
 // Move a file from one location to another
@@ -1678,7 +1703,7 @@ func (m *Mega) Rename(src *Node, name string) error {
 	if err != nil {
 		return err
 	}
-	attr := FileAttr{name}
+	attr := FileAttr{name, src.fingprnt}
 	attr_data, err := encryptAttr(src.meta.key, attr)
 	if err != nil {
 		return err
@@ -1732,7 +1757,7 @@ func (m *Mega) CreateDir(name string, parent *Node) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	attr := FileAttr{name}
+	attr := FileAttr{name, ""}
 	ukey, err := a32_to_bytes(compkey[:4])
 	if err != nil {
 		return nil, err
@@ -1833,6 +1858,17 @@ func (m *Mega) processAddNode(evRaw []byte) error {
 	return nil
 }
 
+func (m *Mega) deserializeDate(attr FileAttr, node *Node) {
+	if attr.Fingerprint != "" {
+		node.fingprnt = attr.Fingerprint
+		abData, _ := b64.StdEncoding.DecodeString(attr.Fingerprint)
+		if len(abData) >= (crcSize + 2) { // array length + almost 2 byte (one for length and one for date)
+			iMTime, _ := deserializeInt64(abData[crcSize:])
+			node.mtime = time.Unix(iMTime, 0)
+		}
+	}
+}
+
 // process an update node event
 func (m *Mega) processUpdateNode(evRaw []byte) error {
 	m.FS.mutex.Lock()
@@ -1851,6 +1887,7 @@ func (m *Mega) processUpdateNode(evRaw []byte) error {
 	} else {
 		node.name = "BAD ATTRIBUTE"
 	}
+	m.deserializeDate(attr, node)
 
 	node.ts = time.Unix(ev.Ts, 0)
 	return nil

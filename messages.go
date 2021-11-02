@@ -105,6 +105,7 @@ type FilesResp struct {
 
 type FileAttr struct {
 	Name string `json:"n"`
+	Fingerprint string `json:"c"`
 }
 
 type GetLinkMsg struct {
@@ -128,6 +129,7 @@ type DownloadResp struct {
 
 type UploadMsg struct {
 	Cmd string `json:"a"`
+	SSL int64  `json:"ssl"`
 	S   int64  `json:"s"`
 }
 
