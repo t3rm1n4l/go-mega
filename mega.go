@@ -1845,6 +1845,9 @@ func (m *Mega) processUpdateNode(evRaw []byte) error {
 	}
 
 	node := m.FS.hashLookup(ev.N)
+	if node == nil {
+		return ENOENT
+	}
 	attr, err := decryptAttr(node.meta.key, ev.Attr)
 	if err == nil {
 		node.name = attr.Name
