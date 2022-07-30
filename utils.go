@@ -374,3 +374,157 @@ func randString(l int) (string, error) {
 	d = d[:l]
 	return string(d), nil
 }
+
+// megaAtob - Mega custom base64 encoding
+func megaAtob(in string) []byte {
+	out := make([]byte, len(in)*3/4)
+	atob([]byte(in), &out, len(out))
+	return out
+}
+
+// Do not call this function directly, use megaAtob instead
+func atob(a []byte, buf *[]byte, blen int) int {
+	c := make([]byte, 4)
+	var i int
+	p := 0
+
+	c[3] = 0
+
+	for j := 0; j < len(a); j += 4 {
+		b := 4
+		if len(a)-j < 4 {
+			b = len(a) - j
+		}
+		for i = 0; i < b; i++ {
+			c[i] = from64(a[i+j])
+			if (c[i]) == 255 {
+				break
+			}
+		}
+
+		if p >= blen || i == 0 {
+			return p
+		}
+
+		(*buf)[p] = (c[0] << 2) | ((c[1] & 0x30) >> 4)
+		p++
+
+		if (p >= blen) || (i < 3) {
+			return p
+		}
+
+		(*buf)[p] = (c[1] << 4) | ((c[2] & 0x3c) >> 2)
+		p++
+
+		if (p >= blen) || (i < 4) {
+			return p
+		}
+
+		(*buf)[p] = (c[2] << 6) | c[3]
+		p++
+	}
+
+	return p
+}
+
+func from64(c byte) uint8 {
+	if (c >= 'A') && (c <= 'Z') {
+		return c - 'A'
+	}
+
+	if (c >= 'a') && (c <= 'z') {
+		return c - 'a' + 26
+	}
+
+	if (c >= '0') && (c <= '9') {
+		return c - '0' + 52
+	}
+
+	if c == '-' || c == '+' {
+		return 62
+	}
+
+	if c == '_' || c == '/' {
+		return 63
+	}
+
+	return 255
+}
+
+// megaBtoa - Mega custom base64 decoding
+func megaBtoa(in string) []byte {
+	out := make([]byte, len(in)*4/3+4)
+	btoa([]byte(in), len(in), &out)
+	return out
+}
+
+// Do not call this function directly, use megaBtoa instead
+func btoa(buf []byte, blen int, a *[]byte) int {
+	p := 0
+	index := 0
+
+	for {
+		if blen <= 0 {
+			break
+		}
+
+		(*a)[p] = to64(buf[index] >> 2)
+		p++
+
+		var tmp uint8
+		if blen > 1 {
+			tmp = buf[index+1]
+		} else {
+			tmp = 0
+		}
+		(*a)[p] = to64((buf[index] << 4) | (tmp >> 4))
+		p++
+
+		if blen < 2 {
+			break
+		}
+
+		if blen > 2 {
+			tmp = buf[index+2]
+		} else {
+			tmp = 0
+		}
+		(*a)[p] = to64(buf[index+1]<<2 | (tmp >> 6))
+		p++
+
+		if blen < 3 {
+			break
+		}
+
+		(*a)[p] = to64(buf[index+2])
+		p++
+
+		blen -= 3
+		index += 3
+	}
+
+	(*a)[p] = 0
+	return p
+}
+
+func to64(c byte) uint8 {
+	c &= 63
+
+	if c < 26 {
+		return c + 'A'
+	}
+
+	if c < 52 {
+		return c - 26 + 'a'
+	}
+
+	if c < 62 {
+		return c - 52 + '0'
+	}
+
+	if c == 62 {
+		return '-'
+	}
+
+	return '_'
+}

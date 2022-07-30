@@ -417,6 +417,7 @@ func (m *Mega) api_request(r []byte) (buf []byte, err error) {
 			m.debugf("Retry API request %d/%d: %v", i, m.retries, err)
 			backOffSleep(&sleepTime)
 		}
+
 		resp, err = m.client.Post(url, "application/json", bytes.NewBuffer(r))
 		if err != nil {
 			continue
@@ -510,7 +511,7 @@ func (m *Mega) prelogin(email string) error {
 }
 
 // Authenticate and start a session
-func (m *Mega) login(email string, passwd string) error {
+func (m *Mega) login(email string, passwd string, multiFactor string) error {
 	var msg [1]LoginMsg
 	var res [1]LoginResp
 	var err error
@@ -531,6 +532,10 @@ func (m *Mega) login(email string, passwd string) error {
 
 	msg[0].Cmd = "us"
 	msg[0].User = email
+	if multiFactor != "" {
+		msg[0].Mfa = multiFactor
+	}
+
 	if m.accountVersion == 1 {
 		msg[0].Handle = uhandle
 	} else {
@@ -585,7 +590,7 @@ func (m *Mega) Login(email string, passwd string) error {
 		return err
 	}
 
-	err = m.login(email, passwd)
+	err = m.login(email, passwd, "")
 	if err != nil {
 		return err
 	}
@@ -593,6 +598,99 @@ func (m *Mega) Login(email string, passwd string) error {
 	waitEvent := m.WaitEventsStart()
 
 	err = m.getFileSystem()
+	if err != nil {
+		return err
+	}
+
+	// Wait until the all the pending events have been received
+	m.WaitEvents(waitEvent, 5*time.Second)
+
+	return nil
+}
+
+// MultiFactorLogin - Authenticate and start a session with 2FA
+func (m *Mega) MultiFactorLogin(email, passwd, multiFactor string) error {
+	err := m.prelogin(email)
+	if err != nil {
+		return err
+	}
+
+	err = m.login(email, passwd, multiFactor)
+	if err != nil {
+		return err
+	}
+
+	waitEvent := m.WaitEventsStart()
+
+	err = m.getFileSystem()
+	if err != nil {
+		return err
+	}
+
+	// Wait until the all the pending events have been received
+	m.WaitEvents(waitEvent, 5*time.Second)
+
+	return nil
+}
+
+// SessionLogin - Authenticate and resume a session with session key
+func (m *Mega) SessionLogin(sessionKey string) error {
+	var msg [1]SessionLoginMsg
+	var res [1]LoginResp
+	var err error
+	var result []byte
+
+	var sessionVersion uint8 = 0
+	USERHANDLE := 8
+	SIDLEN := 2*aes.BlockSize + USERHANDLE*4/3 + 1
+	if len(sessionKey) == aes.BlockSize+SIDLEN+1 {
+		sessionVersion = sessionKey[0]
+		if sessionVersion != 1 {
+			return EARGS
+		}
+
+		sessionKey = sessionKey[1:]
+	}
+
+	var sek []byte
+	var buf []byte
+	if len(sessionKey) == aes.BlockSize+SIDLEN {
+		m.k = []byte(sessionKey[:aes.BlockSize])
+
+		sid := sessionKey[aes.BlockSize:]
+		sida := string(megaBtoa(sid[:SIDLEN]))
+		m.sid = sida[:len(sida)-3]
+		sek = make([]byte, aes.BlockSize)
+		rand.Read(sek)
+
+		buf = megaBtoa(string(sek))
+		// TODO: fetch timezone
+	} else if len(sessionKey) > 0 && sessionKey[0] == 2 {
+		return fmt.Errorf("the session key passed is a folder link")
+	} else {
+		return EARGS
+	}
+
+	msg[0].Cmd = "us"
+	msg[0].SessionKey = string(buf[:len(buf)-3])
+
+	req, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+	result, err = m.api_request(req)
+	if err != nil {
+		return err
+	}
+
+	err = json.Unmarshal(result, &res)
+	if err != nil {
+		return err
+	}
+
+	waitEvent := m.WaitEventsStart()
+
+	err = m.getFileSystem() // FIXME: We need to fetch masterkey in some way in order to decrypt node attributes
 	if err != nil {
 		return err
 	}
