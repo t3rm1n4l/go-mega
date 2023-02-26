@@ -97,6 +97,11 @@ func (c *config) SetUploadWorkers(w int) error {
 	return EWORKER_LIMIT_EXCEEDED
 }
 
+// Set number of retries for api calls
+func (c *config) SetHTTPS(e bool) {
+	c.https = e
+}
+
 type Mega struct {
 	config
 	// Version of the account
