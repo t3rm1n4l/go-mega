@@ -117,6 +117,7 @@ type DownloadMsg struct {
 	G   int    `json:"g"`
 	P   string `json:"p,omitempty"`
 	N   string `json:"n,omitempty"`
+	SSL int    `json:"ssl,omitempty"`
 }
 
 type DownloadResp struct {

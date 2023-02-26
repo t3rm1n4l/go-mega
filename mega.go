@@ -34,6 +34,7 @@ const (
 	UPLOAD_WORKERS       = 1
 	MAX_UPLOAD_WORKERS   = 30
 	TIMEOUT              = time.Second * 10
+	HTTPSONLY            = false
 	minSleepTime         = 10 * time.Millisecond // for retries
 	maxSleepTime         = 5 * time.Second       // for retries
 )
@@ -44,6 +45,7 @@ type config struct {
 	dl_workers int
 	ul_workers int
 	timeout    time.Duration
+	https      bool
 }
 
 func newConfig() config {
@@ -53,6 +55,7 @@ func newConfig() config {
 		dl_workers: DOWNLOAD_WORKERS,
 		ul_workers: UPLOAD_WORKERS,
 		timeout:    TIMEOUT,
+		https:      HTTPSONLY,
 	}
 }
 
@@ -985,6 +988,9 @@ func (m *Mega) NewDownload(src *Node) (*Download, error) {
 	msg[0].Cmd = "g"
 	msg[0].G = 1
 	msg[0].N = src.hash
+	if m.config.https {
+		msg[0].SSL = 2
+	}
 	key := src.meta.key
 	m.FS.mutex.Unlock()
 
