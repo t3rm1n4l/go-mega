@@ -1310,6 +1310,9 @@ func (m *Mega) NewUpload(parent *Node, name string, fileSize int64) (*Upload, er
 
 	msg[0].Cmd = "u"
 	msg[0].S = fileSize
+	if m.config.https {
+		msg[0].SSL = 2
+	}
 
 	request, err := json.Marshal(msg)
 	if err != nil {
