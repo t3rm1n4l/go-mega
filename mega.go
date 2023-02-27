@@ -1042,10 +1042,15 @@ func (m *Mega) NewDownload(src *Node) (*Download, error) {
 		return nil, err
 	}
 
+	downloadUrl := res[0].G
+	if m.config.https && strings.HasPrefix(downloadUrl, "http://") {
+		downloadUrl = "https://" + strings.TrimPrefix(downloadUrl, "http://")
+	}
+
 	d := &Download{
 		m:           m,
 		src:         src,
-		resourceUrl: res[0].G,
+		resourceUrl: downloadUrl,
 		aes_block:   aes_block,
 		iv:          iv,
 		mac_enc:     mac_enc,
@@ -1328,7 +1333,6 @@ func (m *Mega) NewUpload(parent *Node, name string, fileSize int64) (*Upload, er
 		return nil, err
 	}
 
-	uploadUrl := res[0].P
 	ukey := []uint32{0, 0, 0, 0, 0, 0}
 	for i, _ := range ukey {
 		ukey[i] = uint32(mrand.Int31())
@@ -1360,6 +1364,11 @@ func (m *Mega) NewUpload(parent *Node, name string, fileSize int64) (*Upload, er
 	// Do one empty request to get the completion handle
 	if len(chunks) == 0 {
 		chunks = append(chunks, chunkSize{position: 0, size: 0})
+	}
+
+	uploadUrl := res[0].P
+	if m.config.https && strings.HasPrefix(uploadUrl, "http://") {
+		uploadUrl = "https://" + strings.TrimPrefix(uploadUrl, "http://")
 	}
 
 	u := &Upload{
