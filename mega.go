@@ -34,6 +34,7 @@ const (
 	UPLOAD_WORKERS       = 1
 	MAX_UPLOAD_WORKERS   = 30
 	TIMEOUT              = time.Second * 10
+	HTTPSONLY            = false
 	minSleepTime         = 10 * time.Millisecond // for retries
 	maxSleepTime         = 5 * time.Second       // for retries
 )
@@ -44,6 +45,7 @@ type config struct {
 	dl_workers int
 	ul_workers int
 	timeout    time.Duration
+	https      bool
 }
 
 func newConfig() config {
@@ -53,6 +55,7 @@ func newConfig() config {
 		dl_workers: DOWNLOAD_WORKERS,
 		ul_workers: UPLOAD_WORKERS,
 		timeout:    TIMEOUT,
+		https:      HTTPSONLY,
 	}
 }
 
@@ -92,6 +95,11 @@ func (c *config) SetUploadWorkers(w int) error {
 	}
 
 	return EWORKER_LIMIT_EXCEEDED
+}
+
+// Set use https for transfers
+func (c *config) SetHTTPS(e bool) {
+	c.https = e
 }
 
 type Mega struct {
@@ -985,6 +993,9 @@ func (m *Mega) NewDownload(src *Node) (*Download, error) {
 	msg[0].Cmd = "g"
 	msg[0].G = 1
 	msg[0].N = src.hash
+	if m.config.https {
+		msg[0].SSL = 2
+	}
 	key := src.meta.key
 	m.FS.mutex.Unlock()
 
@@ -1031,10 +1042,15 @@ func (m *Mega) NewDownload(src *Node) (*Download, error) {
 		return nil, err
 	}
 
+	downloadUrl := res[0].G
+	if m.config.https && strings.HasPrefix(downloadUrl, "http://") {
+		downloadUrl = "https://" + strings.TrimPrefix(downloadUrl, "http://")
+	}
+
 	d := &Download{
 		m:           m,
 		src:         src,
-		resourceUrl: res[0].G,
+		resourceUrl: downloadUrl,
 		aes_block:   aes_block,
 		iv:          iv,
 		mac_enc:     mac_enc,
@@ -1299,6 +1315,9 @@ func (m *Mega) NewUpload(parent *Node, name string, fileSize int64) (*Upload, er
 
 	msg[0].Cmd = "u"
 	msg[0].S = fileSize
+	if m.config.https {
+		msg[0].SSL = 2
+	}
 
 	request, err := json.Marshal(msg)
 	if err != nil {
@@ -1314,7 +1333,6 @@ func (m *Mega) NewUpload(parent *Node, name string, fileSize int64) (*Upload, er
 		return nil, err
 	}
 
-	uploadUrl := res[0].P
 	ukey := []uint32{0, 0, 0, 0, 0, 0}
 	for i, _ := range ukey {
 		ukey[i] = uint32(mrand.Int31())
@@ -1346,6 +1364,11 @@ func (m *Mega) NewUpload(parent *Node, name string, fileSize int64) (*Upload, er
 	// Do one empty request to get the completion handle
 	if len(chunks) == 0 {
 		chunks = append(chunks, chunkSize{position: 0, size: 0})
+	}
+
+	uploadUrl := res[0].P
+	if m.config.https && strings.HasPrefix(uploadUrl, "http://") {
+		uploadUrl = "https://" + strings.TrimPrefix(uploadUrl, "http://")
 	}
 
 	u := &Upload{
