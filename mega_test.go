@@ -3,6 +3,7 @@ package mega
 import (
 	"crypto/md5"
 	"crypto/rand"
+	"flag"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -14,6 +15,7 @@ import (
 
 var USER string = os.Getenv("MEGA_USER")
 var PASSWORD string = os.Getenv("MEGA_PASSWD")
+var HTTPS = flag.Bool("https", false, "Use HTTPS for transfers")
 
 // retry runs fn until it succeeds, using what to log and retrying on
 // EAGAIN.  It uses exponential backoff
@@ -45,6 +47,7 @@ func skipIfNoCredentials(t *testing.T) {
 func initSession(t *testing.T) *Mega {
 	skipIfNoCredentials(t)
 	m := New()
+	m.SetHTTPS(*HTTPS)
 	// m.SetDebugger(log.Printf)
 	retry(t, "Login", func() error {
 		return m.Login(USER, PASSWORD)

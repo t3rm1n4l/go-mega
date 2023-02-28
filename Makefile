@@ -2,7 +2,8 @@ build:
 	go build
 
 test:
-	go test -cpu 4 -v -race
+	go test -cpu 4 -v -race -args -https=0
+	go test -cpu 4 -v -race -args -https=1
 
 # Get the build dependencies
 build_dep:
