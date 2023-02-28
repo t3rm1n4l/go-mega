@@ -3,7 +3,6 @@ package mega
 import (
 	"crypto/md5"
 	"crypto/rand"
-	"flag"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -15,7 +14,6 @@ import (
 
 var USER string = os.Getenv("MEGA_USER")
 var PASSWORD string = os.Getenv("MEGA_PASSWD")
-var HTTPS = flag.Bool("https", false, "Use HTTPS for transfers")
 
 // retry runs fn until it succeeds, using what to log and retrying on
 // EAGAIN.  It uses exponential backoff
@@ -47,7 +45,6 @@ func skipIfNoCredentials(t *testing.T) {
 func initSession(t *testing.T) *Mega {
 	skipIfNoCredentials(t)
 	m := New()
-	m.SetHTTPS(*HTTPS)
 	// m.SetDebugger(log.Printf)
 	retry(t, "Login", func() error {
 		return m.Login(USER, PASSWORD)
@@ -142,30 +139,41 @@ func TestGetUser(t *testing.T) {
 
 func TestUploadDownload(t *testing.T) {
 	session := initSession(t)
-	node, name, h1 := uploadFile(t, session, 314573, session.FS.root)
+	for i := range []int{0, 1} {
+		if i == 0 {
+			t.Log("HTTP Test")
+			session.SetHTTPS(false)
+		} else {
+			t.Log("HTTPS Test")
+			session.SetHTTPS(true)
+		}
 
-	session.FS.mutex.Lock()
-	phash := session.FS.root.hash
-	n := session.FS.lookup[node.hash]
-	if n.parent.hash != phash {
-		t.Error("Parent of uploaded file mismatch")
-	}
-	session.FS.mutex.Unlock()
+		node, name, h1 := uploadFile(t, session, 314573, session.FS.root)
 
-	err := session.DownloadFile(node, name, nil)
-	if err != nil {
-		t.Fatal("Download failed", err)
-	}
+		session.FS.mutex.Lock()
+		phash := session.FS.root.hash
+		n := session.FS.lookup[node.hash]
+		if n.parent.hash != phash {
+			t.Error("Parent of uploaded file mismatch")
+		}
+		session.FS.mutex.Unlock()
 
-	h2 := fileMD5(t, name)
-	err = os.Remove(name)
-	if err != nil {
-		t.Error("Failed to remove file", err)
-	}
+		err := session.DownloadFile(node, name, nil)
+		if err != nil {
+			t.Fatal("Download failed", err)
+		}
 
-	if h1 != h2 {
-		t.Error("MD5 mismatch for downloaded file")
+		h2 := fileMD5(t, name)
+		err = os.Remove(name)
+		if err != nil {
+			t.Error("Failed to remove file", err)
+		}
+
+		if h1 != h2 {
+			t.Error("MD5 mismatch for downloaded file")
+		}
 	}
+	session.SetHTTPS(false)
 }
 
 func TestMove(t *testing.T) {
