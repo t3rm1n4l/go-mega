@@ -240,6 +240,40 @@ func TestDelete(t *testing.T) {
 	session.FS.mutex.Unlock()
 }
 
+func TestHardDelete(t *testing.T) {
+	session := initSession(t)
+	node, _, _ := uploadFile(t, session, 31, session.FS.root)
+	parentTmp := node.parent
+	if parentTmp != session.FS.root {
+		t.Error("Expects parent node to be root")
+	}
+
+	retry(t, "Hard delete", func() error {
+		return session.Delete(node, true)
+	})
+
+	time.Sleep(1 * time.Second) // wait for the event
+
+	session.FS.mutex.Lock()
+	if _, ok := session.FS.lookup[node.hash]; ok {
+		t.Error("Expects file to be disappeared")
+	}
+
+	isInParent := false
+	for _, child := range parentTmp.children {
+		if child.hash == node.hash {
+			isInParent = true
+			break
+		}
+	}
+
+	if isInParent {
+		t.Error("Expects file to be deleted in parent's children slice")
+	}
+	session.FS.mutex.Unlock()
+
+}
+
 func TestCreateDir(t *testing.T) {
 	session := initSession(t)
 	node := createDir(t, session, "testdir1", session.FS.root)
