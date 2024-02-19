@@ -362,7 +362,7 @@ func encryptAttr(key []byte, attr FileAttr) (b string, err error) {
 }
 
 func randString(l int) (string, error) {
-	encoding := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789AB"
+	encoding := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/+"
 	b := make([]byte, l)
 	_, err := rand.Read(b)
 	if err != nil {
@@ -372,5 +372,5 @@ func randString(l int) (string, error) {
 	d := make([]byte, enc.EncodedLen(len(b)))
 	enc.Encode(d, b)
 	d = d[:l]
-	return string(d), nil
+	return strings.NewReplacer("/", "A", "+", "B").Replace(string(d)), nil
 }
