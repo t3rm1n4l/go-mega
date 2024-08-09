@@ -10,10 +10,17 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/pquerna/otp/totp"
 )
 
+// Credentials for non MFA-enabled accounts
 var USER string = os.Getenv("MEGA_USER")
 var PASSWORD string = os.Getenv("MEGA_PASSWD")
+// Credentials for MFA-enabled accounts
+var USER_MFA = os.Getenv("MEGA_USER_MFA")
+var PASSWORD_MFA string = os.Getenv("MEGA_PASSWD_MFA")
+var SECRET_MFA string = os.Getenv("MEGA_SECRET_MFA")
 
 // retry runs fn until it succeeds, using what to log and retrying on
 // EAGAIN.  It uses exponential backoff
@@ -36,18 +43,91 @@ func retry(t *testing.T, what string, fn func() error) {
 	t.Fatalf("%s failed: %v", what, err)
 }
 
-func skipIfNoCredentials(t *testing.T) {
-	if USER == "" || PASSWORD == "" {
-		t.Skip("MEGA_USER and MEGA_PASSWD not set - skipping integration tests")
+type CredentialType int
+
+const (
+	Credentials CredentialType = iota
+	MfaCredentials
+	AnyCredentials
+)
+
+// getMfaCode generates an MFA code using the provided secret and the current time.
+// If the code cannot be generated, it returns an error.
+func getMfaCode(secret string) (string, error) {
+	return totp.GenerateCode(secret, time.Now())
+}
+
+// getCredentials retrieves credentials for an MFA-enabled account from predefined variables set from the environment.
+// If either the user, password or MFA secret are not set, or if an MFA code cannot be successfully generated from the given secret, it returns an error indicating that the credentials are missing or invalid.
+func getMfaCredentials() (string, string, string, error) {
+	if USER_MFA == "" || PASSWORD_MFA == "" || SECRET_MFA == "" {
+		return "", "", "", fmt.Errorf("MEGA_USER_MFA, MEGA_PASSWD_MFA or MEGA_SECRET_MFA not set.")
 	}
+
+	mfa_code, mfa_code_err := getMfaCode(SECRET_MFA)
+	if mfa_code_err != nil {
+		return "", "", "", fmt.Errorf("Generating MFA code failed: %w", mfa_code_err)
+	}
+
+	return USER_MFA, PASSWORD_MFA, mfa_code, nil
+}
+
+// getCredentials retrieves credentials for a non MFA-enabled account from predefined variables set from the environment.
+// If either the user or password are not set, it returns an error indicating that the credentials are missing.
+func getCredentials() (string, string, error) {
+	if USER == "" || PASSWORD == "" {
+		return "", "", fmt.Errorf("MEGA_USER or MEGA_PASSWD not set.")
+	}
+	return USER, PASSWORD, nil
+}
+
+// getCredentialsOrSkip retrieves user credentials based on the specified CredentialType.
+// It supports both standard and MFA-enabled credentials.
+// If the requested credentials are missing or invalid, the function skips the test with an appropriate message.
+func getCredentialsOrSkip(t *testing.T, credentialsType CredentialType) (string, string, string) {
+
+	switch credentialsType {
+	case Credentials:
+		user, password, err := getCredentials()
+		if err != nil {
+			t.Skipf("Skipping test due to credentials error: %v", err)
+		}
+		return user, password, ""
+	case MfaCredentials:
+		user, password, mfa_code, err := getMfaCredentials()
+		if err != nil {
+			t.Skipf("Skipping test due to credentials error: %v", err)
+		}
+		return user, password, mfa_code
+	case AnyCredentials:
+		user, password, err := getCredentials()
+		if err != nil {
+			t.Logf("Trying with MFA credentials instead, getting other credentials failed with error: %v", err)
+		} else {
+			return user, password, ""
+		}
+		user, password, mfa_code, err := getMfaCredentials()
+		if err != nil {
+			t.Skipf("Skipping test due to credentials error: %v", err)
+		}
+		return user, password, mfa_code
+	default:
+		t.Fatal("Invalid credentials type")
+	}
+
+	t.Fatal("Unreachable!")
+	return "", "", ""
 }
 
 func initSession(t *testing.T) *Mega {
-	skipIfNoCredentials(t)
+	user, password, mfa_code := getCredentialsOrSkip(t, AnyCredentials)
 	m := New()
 	// m.SetDebugger(log.Printf)
 	retry(t, "Login", func() error {
-		return m.Login(USER, PASSWORD)
+		if mfa_code != "" {
+			return m.MultiFactorLogin(user, password, mfa_code)
+		}
+		return m.Login(user, password)
 	})
 	return m
 }
@@ -121,11 +201,20 @@ func fileMD5(t *testing.T, name string) string {
 }
 
 func TestLogin(t *testing.T) {
-	skipIfNoCredentials(t)
+	user, password, _ := getCredentialsOrSkip(t, Credentials)
 
 	m := New()
 	retry(t, "Login", func() error {
-		return m.Login(USER, PASSWORD)
+		return m.Login(user, password)
+	})
+}
+
+func TestMfaLogin(t *testing.T) {
+	user, password, mfa_code := getCredentialsOrSkip(t, MfaCredentials)
+
+	m := New()
+	retry(t, "MfaLogin", func() error {
+		return m.MultiFactorLogin(user, password, mfa_code)
 	})
 }
 
@@ -254,11 +343,17 @@ func TestCreateDir(t *testing.T) {
 }
 
 func TestConfig(t *testing.T) {
-	skipIfNoCredentials(t)
+	user, password, mfa_code := getCredentialsOrSkip(t, AnyCredentials)
 
 	m := New()
 	m.SetAPIUrl("http://invalid.domain")
-	err := m.Login(USER, PASSWORD)
+	err := func() error {
+		if mfa_code != "" {
+			return m.MultiFactorLogin(user, password, mfa_code)
+		}
+		return m.Login(user, password)
+	}()
+
 	if err == nil {
 		t.Error("API Url: Expected failure")
 	}
