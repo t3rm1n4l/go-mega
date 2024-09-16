@@ -482,7 +482,7 @@ func (m *Mega) prelogin(email string) error {
 
 	email = strings.ToLower(email) // mega uses lowercased emails for login purposes - FIXME is this true for prelogin?
 
-	msg[0].Cmd = "us0"
+	msg[0].Cmd = COMMAND_PRELOGIN
 	msg[0].User = email
 
 	req, err := json.Marshal(msg)
@@ -537,7 +537,7 @@ func (m *Mega) login(email string, passwd string, multiFactor string) error {
 	m.uh = make([]byte, len(uhandle))
 	copy(m.uh, uhandle)
 
-	msg[0].Cmd = "us"
+	msg[0].Cmd = COMMAND_LOGIN
 	msg[0].User = email
 	msg[0].Mfa = multiFactor
 
@@ -618,6 +618,23 @@ func (m *Mega) MultiFactorLogin(email, passwd, multiFactor string) error {
 	return nil
 }
 
+func (m *Mega) Logout() error {
+	var msg [1]LogoutMsg
+
+	msg[0].Cmd = COMMAND_LOGOUT
+
+	req, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+	_, err = m.api_request(req)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // WaitEventsStart - call this before you do the action which might
 // generate events then use the returned channel as a parameter to
 // WaitEvents to wait for the event(s) to be received.
@@ -667,7 +684,7 @@ func (m *Mega) GetUser() (UserResp, error) {
 	var msg [1]UserMsg
 	var res [1]UserResp
 
-	msg[0].Cmd = "ug"
+	msg[0].Cmd = COMMAND_GET_USER
 
 	req, err := json.Marshal(msg)
 	if err != nil {
@@ -687,7 +704,7 @@ func (m *Mega) GetQuota() (QuotaResp, error) {
 	var msg [1]QuotaMsg
 	var res [1]QuotaResp
 
-	msg[0].Cmd = "uq"
+	msg[0].Cmd = COMMAND_GET_USER_QUOTA
 	msg[0].Xfer = 1
 	msg[0].Strg = 1
 
@@ -924,7 +941,7 @@ func (m *Mega) getFileSystem() error {
 	var msg [1]FilesMsg
 	var res [1]FilesResp
 
-	msg[0].Cmd = "f"
+	msg[0].Cmd = COMMAND_FILES
 	msg[0].C = 1
 
 	req, err := json.Marshal(msg)
@@ -990,7 +1007,7 @@ func (m *Mega) NewDownload(src *Node) (*Download, error) {
 	var res [1]DownloadResp
 
 	m.FS.mutex.Lock()
-	msg[0].Cmd = "g"
+	msg[0].Cmd = COMMAND_DOWNLOAD
 	msg[0].G = 1
 	msg[0].N = src.hash
 	if m.config.https {
@@ -1313,7 +1330,7 @@ func (m *Mega) NewUpload(parent *Node, name string, fileSize int64) (*Upload, er
 	var res [1]UploadResp
 	parenthash := parent.GetHash()
 
-	msg[0].Cmd = "u"
+	msg[0].Cmd = COMMAND_UPLOAD
 	msg[0].S = fileSize
 	if m.config.https {
 		msg[0].SSL = 2
@@ -1532,7 +1549,7 @@ func (u *Upload) Finish() (node *Node, err error) {
 	var cmsg [1]UploadCompleteMsg
 	var cres [1]UploadCompleteResp
 
-	cmsg[0].Cmd = "p"
+	cmsg[0].Cmd = COMMAND_UPLOAD_COMPLETE
 	cmsg[0].T = u.parenthash
 	cmsg[0].N[0].H = string(u.completion_handle)
 	cmsg[0].N[0].T = FILE
@@ -1667,7 +1684,7 @@ func (m *Mega) Move(src *Node, parent *Node) error {
 	var msg [1]MoveFileMsg
 	var err error
 
-	msg[0].Cmd = "m"
+	msg[0].Cmd = COMMAND_MOVE
 	msg[0].N = src.hash
 	msg[0].T = parent.hash
 	msg[0].I, err = randString(10)
@@ -1719,7 +1736,7 @@ func (m *Mega) Rename(src *Node, name string) error {
 		return err
 	}
 
-	msg[0].Cmd = "a"
+	msg[0].Cmd = COMMAND_RENAME
 	msg[0].Attr = attr_data
 	msg[0].Key = base64urlencode(key)
 	msg[0].N = src.hash
@@ -1777,7 +1794,7 @@ func (m *Mega) CreateDir(name string, parent *Node) (*Node, error) {
 		return nil, err
 	}
 
-	msg[0].Cmd = "p"
+	msg[0].Cmd = COMMAND_UPLOAD_COMPLETE
 	msg[0].T = parent.hash
 	msg[0].N[0].H = "xxxxxxxx"
 	msg[0].N[0].T = FOLDER
@@ -1820,7 +1837,7 @@ func (m *Mega) Delete(node *Node, destroy bool) error {
 
 	var msg [1]FileDeleteMsg
 	var err error
-	msg[0].Cmd = "d"
+	msg[0].Cmd = COMMAND_DELETE
 	msg[0].N = node.hash
 	msg[0].I, err = randString(10)
 	if err != nil {
@@ -2049,7 +2066,7 @@ func (m *Mega) getLink(n *Node) (string, error) {
 	var msg [1]GetLinkMsg
 	var res [1]string
 
-	msg[0].Cmd = "l"
+	msg[0].Cmd = COMMAND_GET_LINK
 	msg[0].N = n.GetHash()
 
 	req, err := json.Marshal(msg)

@@ -132,6 +132,12 @@ func initSession(t *testing.T) *Mega {
 	return m
 }
 
+func endSession(t *testing.T, session *Mega) {
+	retry(t, "Logout", func() error {
+		return session.Logout()
+	})
+}
+
 // createFile creates a temporary file of a given size along with its MD5SUM
 func createFile(t *testing.T, size int64) (string, string) {
 	b := make([]byte, size)
@@ -207,6 +213,8 @@ func TestLogin(t *testing.T) {
 	retry(t, "Login", func() error {
 		return m.Login(user, password)
 	})
+
+	endSession(t, m)
 }
 
 func TestMfaLogin(t *testing.T) {
@@ -216,6 +224,13 @@ func TestMfaLogin(t *testing.T) {
 	retry(t, "MfaLogin", func() error {
 		return m.MultiFactorLogin(user, password, mfa_code)
 	})
+
+	endSession(t, m)
+}
+
+func TestLogout(t *testing.T) {
+	session := initSession(t)
+	endSession(t, session)
 }
 
 func TestGetUser(t *testing.T) {
@@ -224,6 +239,7 @@ func TestGetUser(t *testing.T) {
 	if err != nil {
 		t.Fatal("GetUser failed", err)
 	}
+	endSession(t, session)
 }
 
 func TestUploadDownload(t *testing.T) {
@@ -263,6 +279,7 @@ func TestUploadDownload(t *testing.T) {
 		}
 	}
 	session.SetHTTPS(false)
+	endSession(t, session)
 }
 
 func TestMove(t *testing.T) {
@@ -282,6 +299,8 @@ func TestMove(t *testing.T) {
 		t.Error("Move happened to wrong parent", phash, n.parent.hash)
 	}
 	session.FS.mutex.Unlock()
+
+	endSession(t, session)
 }
 
 func TestRename(t *testing.T) {
@@ -299,6 +318,7 @@ func TestRename(t *testing.T) {
 		t.Error("Renamed to wrong name", newname)
 	}
 	session.FS.mutex.Unlock()
+	endSession(t, session)
 }
 
 func TestDelete(t *testing.T) {
@@ -327,6 +347,7 @@ func TestDelete(t *testing.T) {
 		t.Error("Expects file to be dissapeared")
 	}
 	session.FS.mutex.Unlock()
+	endSession(t, session)
 }
 
 func TestCreateDir(t *testing.T) {
@@ -340,6 +361,7 @@ func TestCreateDir(t *testing.T) {
 		t.Error("Wrong directory parent")
 	}
 	session.FS.mutex.Unlock()
+	endSession(t, session)
 }
 
 func TestConfig(t *testing.T) {
@@ -420,6 +442,7 @@ func TestPathLookup(t *testing.T) {
 			}
 		}
 	}
+	endSession(t, session)
 }
 
 func TestEventNotify(t *testing.T) {
@@ -449,6 +472,8 @@ func TestEventNotify(t *testing.T) {
 	if node != nil {
 		t.Fatal("Expects file to not-found in first client's FS")
 	}
+	endSession(t, session1)
+	endSession(t, session2)
 }
 
 func TestExportLink(t *testing.T) {
@@ -466,6 +491,7 @@ func TestExportLink(t *testing.T) {
 		_, err := session.Link(node, true)
 		return err
 	})
+	endSession(t, session)
 }
 
 func TestWaitEvents(t *testing.T) {
