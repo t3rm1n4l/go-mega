@@ -1925,6 +1925,10 @@ func (m *Mega) processDeleteNode(evRaw []byte) error {
 	return nil
 }
 
+func (m *Mega) processEventStub(evRaw []byte) error {
+	return ENOTIMPLEMENTED
+}
+
 // Listen for server event notifications and play actions
 func (m *Mega) pollEvents() {
 	var err error
@@ -2021,11 +2025,11 @@ func (m *Mega) pollEvents() {
 				m.logf("pollEvents: Couldn't parse event from server: %v: %s", err, evRaw)
 				continue
 			}
-			m.debugf("pollEvents: Parsing event %q: %s", gev.Cmd, evRaw)
+			m.debugf("pollEvents: Parsing event %q: %s", gev.GEventType, evRaw)
 
 			// Work out what to do with the event
 			var process func([]byte) error
-			switch gev.Cmd {
+			switch gev.GEventType {
 			case "t": // node addition
 				process = m.processAddNode
 			case "u": // node update
@@ -2033,29 +2037,44 @@ func (m *Mega) pollEvents() {
 			case "d": // node deletion
 				process = m.processDeleteNode
 			case "s", "s2": // share addition/update/revocation
+				process = m.processEventStub
 			case "c": // contact addition/update
+				process = m.processEventStub
 			case "k": // crypto key request
+				process = m.processEventStub
 			case "fa": // file attribute update
+				process = m.processEventStub
 			case "ua": // user attribute update
+				process = m.processEventStub
 			case "psts": // account updated
+				process = m.processEventStub
 			case "ipc": // incoming pending contact request (to us)
+				process = m.processEventStub
 			case "opc": // outgoing pending contact request (from us)
+				process = m.processEventStub
 			case "upci": // incoming pending contact request update (accept/deny/ignore)
+				process = m.processEventStub
 			case "upco": // outgoing pending contact request update (from them, accept/deny/ignore)
+				process = m.processEventStub
 			case "ph": // public links handles
+				process = m.processEventStub
 			case "se": // set email
+				process = m.processEventStub
 			case "mcc": // chat creation / peer's invitation / peer's removal
+				process = m.processEventStub
 			case "mcna": // granted / revoked access to a node
+				process = m.processEventStub
 			case "uac": // user access control
+				process = m.processEventStub
 			default:
-				m.debugf("pollEvents: Unknown message %q received: %s", gev.Cmd, evRaw)
+				m.debugf("pollEvents: Unknown message %q received: %s", gev.GEventType, evRaw)
 			}
 
 			// process the event if we can
 			if process != nil {
 				err := process(evRaw)
 				if err != nil {
-					m.logf("pollEvents: Error processing event %q '%s': %v", gev.Cmd, evRaw, err)
+					m.logf("pollEvents: Error processing event %q '%s': %v", gev.GEventType, evRaw, err)
 				}
 			}
 		}

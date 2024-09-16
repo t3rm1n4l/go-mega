@@ -188,7 +188,7 @@ type FileDeleteMsg struct {
 // GenericEvent is a generic event for parsing the Cmd type before
 // decoding more specifically
 type GenericEvent struct {
-	Cmd string `json:"a"`
+	GEventType string `json:"a"`
 }
 
 // FSEvent - event for various file system events
@@ -197,7 +197,7 @@ type GenericEvent struct {
 // Update attr (a=u)
 // New nodes (a=t)
 type FSEvent struct {
-	Cmd string `json:"a"`
+	FSEventType string `json:"a"`
 
 	T struct {
 		Files []FSNode `json:"f"`
