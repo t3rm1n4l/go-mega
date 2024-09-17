@@ -16,4 +16,5 @@ const (
 	COMMAND_RENAME APICommand = "a"
 	COMMAND_DELETE APICommand = "d"
 	COMMAND_GET_LINK APICommand = "l"
+	COMMAND_GET_USER_SESSIONS APICommand = "usl"
 )

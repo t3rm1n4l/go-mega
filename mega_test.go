@@ -350,6 +350,15 @@ func TestDelete(t *testing.T) {
 	endSession(t, session)
 }
 
+func TestGetUserSessions(t *testing.T) {
+	session := initSession(t)
+	_, err := session.GetUserSessions()
+	if err != nil {
+		t.Fatal("GetUserSessions failed", err)
+	}
+	endSession(t, session)
+}
+
 func TestCreateDir(t *testing.T) {
 	session := initSession(t)
 	node := createDir(t, session, "testdir1", session.FS.root)

@@ -185,6 +185,44 @@ type FileDeleteMsg struct {
 	I   string `json:"i"`
 }
 
+type GetUserSessionsMsg struct {
+	Cmd APICommand `json:"a"`
+	IdAndAliveInfo   int    `json:"x"`
+	DeviceIDInfo   int    `json:"d"`
+}
+
+type GetUserSessionsResp struct {
+	DateTime int
+	Unused int
+	UserAgent string
+	IPAddress string
+	Country string
+	IsCurrent int
+	SessionID string
+	IsActive int
+	DeviceID int
+}
+
+type getUserSessionsError struct {
+	message string
+}
+
+func (e *getUserSessionsError) Error() string {
+	return e.message
+}
+
+func (n *GetUserSessionsResp) UnmarshalJSON(buf []byte) error {
+	tmp := []interface{}{&n.DateTime, &n.Unused, &n.UserAgent, &n.IPAddress, &n.Country, &n.IsCurrent, &n.SessionID, &n.IsActive, &n.DeviceID}
+	wantLen := len(tmp)
+	if err := json.Unmarshal(buf, &tmp); err != nil {
+		return err
+	}
+	if g, e := len(tmp), wantLen; g != e {
+		return &getUserSessionsError{message: "wrong number of fields in GetUserSessionsResp"}
+	}
+	return nil
+}
+
 // GenericEvent is a generic event for parsing the Cmd type before
 // decoding more specifically
 type GenericEvent struct {

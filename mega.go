@@ -1863,6 +1863,30 @@ func (m *Mega) Delete(node *Node, destroy bool) error {
 	return nil
 }
 
+func (m *Mega) GetUserSessions() ([]GetUserSessionsResp, error) {
+	var msg [1]GetUserSessionsMsg
+
+	msg[0].Cmd = COMMAND_GET_USER_SESSIONS
+	msg[0].IdAndAliveInfo = 1
+	msg[0].DeviceIDInfo = 1
+
+	request, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
+	result, err := m.api_request(request)
+	if err != nil {
+		return nil, err
+	}
+
+	var res [1][]GetUserSessionsResp
+	if err := json.Unmarshal(result, &res); err != nil {
+		return nil, err
+	}
+
+	return res[0], nil
+}
+
 // process an add node event
 func (m *Mega) processAddNode(evRaw []byte) error {
 	m.FS.mutex.Lock()
