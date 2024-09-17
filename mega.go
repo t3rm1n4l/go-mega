@@ -28,6 +28,7 @@ import (
 const (
 	API_URL              = "https://g.api.mega.co.nz"
 	BASE_DOWNLOAD_URL    = "https://mega.co.nz"
+	USER_AGENT           = "GoMega/1.0"
 	RETRIES              = 10
 	DOWNLOAD_WORKERS     = 3
 	MAX_DOWNLOAD_WORKERS = 30
@@ -41,6 +42,7 @@ const (
 
 type config struct {
 	baseurl    string
+	useragent  string
 	retries    int
 	dl_workers int
 	ul_workers int
@@ -51,6 +53,7 @@ type config struct {
 func newConfig() config {
 	return config{
 		baseurl:    API_URL,
+		useragent: USER_AGENT,
 		retries:    RETRIES,
 		dl_workers: DOWNLOAD_WORKERS,
 		ul_workers: UPLOAD_WORKERS,
@@ -354,7 +357,7 @@ func New() *Mega {
 		config: cfg,
 		sn:     bigx.Int64(),
 		FS:     mgfs,
-		client: newHttpClient(cfg.timeout),
+		client: newHttpClient(cfg.useragent, cfg.timeout),
 	}
 	m.SetLogger(log.Printf)
 	m.SetDebugger(nil)
