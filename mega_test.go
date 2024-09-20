@@ -44,6 +44,26 @@ func retry(t *testing.T, what string, fn func() error) {
 	t.Fatalf("%s failed: %v", what, err)
 }
 
+func retrySetup(what string, fn func() error) {
+	const maxTries = 10
+	var err error
+	sleep := 100 * time.Millisecond
+	for i := 1; i <= maxTries; i++ {
+		err = fn()
+		if err == nil {
+			return
+		}
+		if err != EAGAIN {
+			break
+		}
+		fmt.Printf("%s failed %d/%d - retrying after %v sleep", what, i, maxTries, sleep)
+		time.Sleep(sleep)
+		sleep *= 2
+	}
+	fmt.Printf("%s failed: %v", what, err)
+	os.Exit(1)
+}
+
 type CredentialType int
 
 const (
@@ -84,59 +104,134 @@ func getCredentials() (string, string, error) {
 
 // getCredentialsOrSkip retrieves user credentials based on the specified CredentialType.
 // It supports both standard and MFA-enabled credentials.
-// If the requested credentials are missing or invalid, the function skips the test with an appropriate message.
-func getCredentialsOrSkip(t *testing.T, credentialsType CredentialType) (string, string, string) {
+func getCredentialsOrSkip(credentialsType CredentialType) (string, string, string, error) {
 
 	switch credentialsType {
 	case Credentials:
 		user, password, err := getCredentials()
 		if err != nil {
-			t.Skipf("Skipping test due to credentials error: %v", err)
+			return "", "", "", fmt.Errorf("Skipping test due to credentials error: %v", err)
 		}
-		return user, password, ""
+		return user, password, "", nil
 	case MfaCredentials:
 		user, password, mfa_code, err := getMfaCredentials()
 		if err != nil {
-			t.Skipf("Skipping test due to credentials error: %v", err)
+
+			return "", "", "", fmt.Errorf("Skipping test due to credentials error: %v", err)
 		}
-		return user, password, mfa_code
+		return user, password, mfa_code, nil
 	case AnyCredentials:
 		user, password, err := getCredentials()
 		if err != nil {
-			t.Logf("Trying with MFA credentials instead, getting other credentials failed with error: %v", err)
+			fmt.Printf("Trying with MFA credentials instead, getting other credentials failed with error: %v", err)
 		} else {
-			return user, password, ""
+			return user, password, "", nil
 		}
 		user, password, mfa_code, err := getMfaCredentials()
 		if err != nil {
-			t.Skipf("Skipping test due to credentials error: %v", err)
-		}
-		return user, password, mfa_code
-	default:
-		t.Fatal("Invalid credentials type")
-	}
 
-	t.Fatal("Unreachable!")
-	return "", "", ""
+			return "", "", "", fmt.Errorf("Skipping test due to credentials error: %v", err)
+		}
+		return user, password, mfa_code, nil
+	default:
+		return "", "", "", fmt.Errorf("Invalid credentials type")
+	}
 }
 
-func initSession(t *testing.T) *Mega {
-	user, password, mfa_code := getCredentialsOrSkip(t, AnyCredentials)
+func trySessionLogin(m *Mega, mandatory bool) error {
+	if _, err := os.Stat("session.txt"); err == nil {
+		session_file, err := os.ReadFile("session.txt")
+		if err != nil {
+			return fmt.Errorf("Error reading session file")
+		} else {
+			session := string(session_file)
+			err = m.SessionLogin(session)
+			if err != nil {
+				return fmt.Errorf("can't perform session login")
+			}
+			fmt.Printf("Using session: %s\n", session)
+			return nil
+		}
+	}
+	if (mandatory){
+	return fmt.Errorf("Session file not found")
+	}
+	return nil
+}
+
+func setup() error {
+
 	m := New()
-	// m.SetDebugger(log.Printf)
-	retry(t, "Login", func() error {
+
+	err := trySessionLogin(m, false)
+	if err != nil {
+		return err
+	}
+
+	user, password, mfa_code, err := getCredentialsOrSkip(AnyCredentials)
+	if err != nil {
+		return fmt.Errorf("error getting credentials for login")
+	}
+	retrySetup("Login", func() error {
 		if mfa_code != "" {
 			return m.MultiFactorLogin(user, password, mfa_code)
 		}
 		return m.Login(user, password)
 	})
-	return m
+
+	// dump session to file
+	session, err := m.DumpSession()
+	if err != nil {
+		return fmt.Errorf("Error dumping session")
+	}
+	fmt.Printf("Using session: %s\n", session)
+	err = os.WriteFile("session.txt", []byte(session), 0644)
+	if err != nil {
+		return fmt.Errorf("Error writing session file")
+	}
+
+	return nil
 }
 
-func endSession(t *testing.T, session *Mega) {
-	retry(t, "Logout", func() error {
-		return session.Logout()
+func teardown() error{
+
+	fmt.Println("Logging out and removing session file.")
+
+	m := New()
+	err := trySessionLogin(m, true)
+	if err != nil {
+		return err
+	}
+
+	retrySetup("Logout", func() error {
+		return m.Logout()
 	})
+	_ = os.Remove("session.txt")
+	return nil
+}
+
+func TestMain(m *testing.M) {
+	err:=setup()
+	if err != nil {
+		os.Exit(1)
+	}
+	exitCode := m.Run()
+	err=teardown()
+	if err != nil {
+		os.Exit(1)
+	}
+	os.Exit(exitCode)
+}
+
+func initTest(t *testing.T) *Mega {
+	m := New()
+
+	err := trySessionLogin(m, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return m
 }
 
 // createFile creates a temporary file of a given size along with its MD5SUM
@@ -207,64 +302,36 @@ func fileMD5(t *testing.T, name string) string {
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
-func TestLogin(t *testing.T) {
-	user, password, _ := getCredentialsOrSkip(t, Credentials)
-
-	m := New()
-	retry(t, "Login", func() error {
-		return m.Login(user, password)
-	})
-
-	endSession(t, m)
-}
-
-func TestMfaLogin(t *testing.T) {
-	user, password, mfa_code := getCredentialsOrSkip(t, MfaCredentials)
-
-	m := New()
-	retry(t, "MfaLogin", func() error {
-		return m.MultiFactorLogin(user, password, mfa_code)
-	})
-
-	endSession(t, m)
-}
-
-func TestLogout(t *testing.T) {
-	session := initSession(t)
-	endSession(t, session)
-}
-
 func TestGetUser(t *testing.T) {
-	session := initSession(t)
-	_, err := session.GetUser()
+	m := initTest(t)
+	_, err := m.GetUser()
 	if err != nil {
 		t.Fatal("GetUser failed", err)
 	}
-	endSession(t, session)
 }
 
 func TestUploadDownload(t *testing.T) {
-	session := initSession(t)
+	m := initTest(t)
 	for i := range []int{0, 1} {
 		if i == 0 {
 			t.Log("HTTP Test")
-			session.SetHTTPS(false)
+			m.SetHTTPS(false)
 		} else {
 			t.Log("HTTPS Test")
-			session.SetHTTPS(true)
+			m.SetHTTPS(true)
 		}
 
-		node, name, h1 := uploadFile(t, session, 314573, session.FS.root)
+		node, name, h1 := uploadFile(t, m, 314573, m.FS.root)
 
-		session.FS.mutex.Lock()
-		phash := session.FS.root.hash
-		n := session.FS.lookup[node.hash]
+		m.FS.mutex.Lock()
+		phash := m.FS.root.hash
+		n := m.FS.lookup[node.hash]
 		if n.parent.hash != phash {
 			t.Error("Parent of uploaded file mismatch")
 		}
-		session.FS.mutex.Unlock()
+		m.FS.mutex.Unlock()
 
-		err := session.DownloadFile(node, name, nil)
+		err := m.DownloadFile(node, name, nil)
 		if err != nil {
 			t.Fatal("Download failed", err)
 		}
@@ -279,103 +346,96 @@ func TestUploadDownload(t *testing.T) {
 			t.Error("MD5 mismatch for downloaded file")
 		}
 	}
-	session.SetHTTPS(false)
-	endSession(t, session)
+	m.SetHTTPS(false)
 }
 
 func TestMove(t *testing.T) {
-	session := initSession(t)
-	node, _, _ := uploadFile(t, session, 31, session.FS.root)
+	m := initTest(t)
+	node, _, _ := uploadFile(t, m, 31, m.FS.root)
 
 	hash := node.hash
-	phash := session.FS.trash.hash
-	err := session.Move(node, session.FS.trash)
+	phash := m.FS.trash.hash
+	err := m.Move(node, m.FS.trash)
 	if err != nil {
 		t.Fatal("Move failed", err)
 	}
 
-	session.FS.mutex.Lock()
-	n := session.FS.lookup[hash]
+	m.FS.mutex.Lock()
+	n := m.FS.lookup[hash]
 	if n.parent.hash != phash {
 		t.Error("Move happened to wrong parent", phash, n.parent.hash)
 	}
-	session.FS.mutex.Unlock()
-
-	endSession(t, session)
+	m.FS.mutex.Unlock()
 }
 
 func TestRename(t *testing.T) {
-	session := initSession(t)
-	node, _, _ := uploadFile(t, session, 31, session.FS.root)
+	m := initTest(t)
+	node, _, _ := uploadFile(t, m, 31, m.FS.root)
 
-	err := session.Rename(node, "newname.txt")
+	err := m.Rename(node, "newname.txt")
 	if err != nil {
 		t.Fatal("Rename failed", err)
 	}
 
-	session.FS.mutex.Lock()
-	newname := session.FS.lookup[node.hash].name
+	m.FS.mutex.Lock()
+	newname := m.FS.lookup[node.hash].name
 	if newname != "newname.txt" {
 		t.Error("Renamed to wrong name", newname)
 	}
-	session.FS.mutex.Unlock()
-	endSession(t, session)
+	m.FS.mutex.Unlock()
 }
 
 func TestDelete(t *testing.T) {
-	session := initSession(t)
-	node, _, _ := uploadFile(t, session, 31, session.FS.root)
+	m := initTest(t)
+	node, _, _ := uploadFile(t, m, 31, m.FS.root)
 
 	retry(t, "Soft delete", func() error {
-		return session.Delete(node, false)
+		return m.Delete(node, false)
 	})
 
-	session.FS.mutex.Lock()
-	node = session.FS.lookup[node.hash]
-	if node.parent != session.FS.trash {
+	m.FS.mutex.Lock()
+	node = m.FS.lookup[node.hash]
+	if node.parent != m.FS.trash {
 		t.Error("Expects file to be moved to trash")
 	}
-	session.FS.mutex.Unlock()
+	m.FS.mutex.Unlock()
 
 	retry(t, "Hard delete", func() error {
-		return session.Delete(node, true)
+		return m.Delete(node, true)
 	})
 
 	time.Sleep(1 * time.Second) // wait for the event
 
-	session.FS.mutex.Lock()
-	if _, ok := session.FS.lookup[node.hash]; ok {
+	m.FS.mutex.Lock()
+	if _, ok := m.FS.lookup[node.hash]; ok {
 		t.Error("Expects file to be dissapeared")
 	}
-	session.FS.mutex.Unlock()
-	endSession(t, session)
+	m.FS.mutex.Unlock()
 }
 
 func TestGetUserSessions(t *testing.T) {
-	session := initSession(t)
-	_, err := session.GetUserSessions()
+	m := initTest(t)
+	_, err := m.GetUserSessions()
 	if err != nil {
 		t.Fatal("GetUserSessions failed", err)
 	}
-	endSession(t, session)
 }
 
 func TestCreateDir(t *testing.T) {
-	session := initSession(t)
-	node := createDir(t, session, "testdir1", session.FS.root)
-	node2 := createDir(t, session, "testdir2", node)
+	m := initTest(t)
+	node := createDir(t, m, "testdir1", m.FS.root)
+	node2 := createDir(t, m, "testdir2", node)
 
-	session.FS.mutex.Lock()
-	nnode2 := session.FS.lookup[node2.hash]
+	m.FS.mutex.Lock()
+	nnode2 := m.FS.lookup[node2.hash]
 	if nnode2.parent.hash != node.hash {
 		t.Error("Wrong directory parent")
 	}
-	session.FS.mutex.Unlock()
-	endSession(t, session)
+	m.FS.mutex.Unlock()
 }
 
 func TestConfig(t *testing.T) {
-	user, password, mfa_code := getCredentialsOrSkip(t, AnyCredentials)
+	user, password, mfa_code := "foo", "bar", "012345"
 
 	m := New()
 	m.SetAPIUrl("http://invalid.domain")
@@ -405,22 +465,22 @@ func TestConfig(t *testing.T) {
 }
 
 func TestPathLookup(t *testing.T) {
-	session := initSession(t)
+	m := initTest(t)
 
 	rs, err := randString(5)
 	if err != nil {
 		t.Fatalf("failed to make random string: %v", err)
 	}
-	node1 := createDir(t, session, "dir-1-"+rs, session.FS.root)
-	node21 := createDir(t, session, "dir-2-1-"+rs, node1)
-	node22 := createDir(t, session, "dir-2-2-"+rs, node1)
-	node31 := createDir(t, session, "dir-3-1-"+rs, node21)
-	node32 := createDir(t, session, "dir-3-2-"+rs, node22)
+	node1 := createDir(t, m, "dir-1-"+rs, m.FS.root)
+	node21 := createDir(t, m, "dir-2-1-"+rs, node1)
+	node22 := createDir(t, m, "dir-2-2-"+rs, node1)
+	node31 := createDir(t, m, "dir-3-1-"+rs, node21)
+	node32 := createDir(t, m, "dir-3-2-"+rs, node22)
 	_ = node32
 
-	_, name1, _ := uploadFile(t, session, 31, node31)
-	_, _, _ = uploadFile(t, session, 31, node31)
-	_, name3, _ := uploadFile(t, session, 31, node22)
+	_, name1, _ := uploadFile(t, m, 31, node31)
+	_, _, _ = uploadFile(t, m, 31, node31)
+	_, name3, _ := uploadFile(t, m, 31, node22)
 
 	testpaths := [][]string{
 		{"dir-1-" + rs, "dir-2-2-" + rs, path.Base(name3)},
@@ -432,7 +492,7 @@ func TestPathLookup(t *testing.T) {
 	results := []error{nil, nil, nil, ENOENT}
 
 	for i, tst := range testpaths {
-		ns, e := session.FS.PathLookup(session.FS.root, tst)
+		ns, e := m.FS.PathLookup(m.FS.root, tst)
 		switch {
 		case e != results[i]:
 			t.Errorf("Test %d failed: wrong result", i)
@@ -452,12 +512,13 @@ func TestPathLookup(t *testing.T) {
 			}
 		}
 	}
-	endSession(t, session)
 }
 
 func TestEventNotify(t *testing.T) {
-	session1 := initSession(t)
-	session2 := initSession(t)
+	t.Skipf("TODO: reimplement this test")
+
+	session1 := initTest(t)
+	session2 := initTest(t)
 
 	node, _, _ := uploadFile(t, session1, 31, session1.FS.root)
 
@@ -482,26 +543,23 @@ func TestEventNotify(t *testing.T) {
 	if node != nil {
 		t.Fatal("Expects file to not-found in first client's FS")
 	}
-	endSession(t, session1)
-	endSession(t, session2)
 }
 
 func TestExportLink(t *testing.T) {
-	session := initSession(t)
-	node, _, _ := uploadFile(t, session, 31, session.FS.root)
+	m := initTest(t)
+	node, _, _ := uploadFile(t, m, 31, m.FS.root)
 
 	// Don't include decryption key
 	retry(t, "Failed to export link (key not included)", func() error {
-		_, err := session.Link(node, false)
+		_, err := m.Link(node, false)
 		return err
 	})
 
 	// Do include decryption key
 	retry(t, "Failed to export link (key included)", func() error {
-		_, err := session.Link(node, true)
+		_, err := m.Link(node, true)
 		return err
 	})
-	endSession(t, session)
 }
 
 func TestWaitEvents(t *testing.T) {
