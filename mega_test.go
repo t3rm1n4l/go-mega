@@ -4,7 +4,7 @@ import (
 	"crypto/md5"
 	"crypto/rand"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"os"
 	"path"
 	"sync"
@@ -17,6 +17,7 @@ import (
 // Credentials for non MFA-enabled accounts
 var USER string = os.Getenv("MEGA_USER")
 var PASSWORD string = os.Getenv("MEGA_PASSWD")
+
 // Credentials for MFA-enabled accounts
 var USER_MFA = os.Getenv("MEGA_USER_MFA")
 var PASSWORD_MFA string = os.Getenv("MEGA_PASSWD_MFA")
@@ -145,7 +146,7 @@ func createFile(t *testing.T, size int64) (string, string) {
 	if err != nil {
 		t.Fatalf("Error reading rand: %v", err)
 	}
-	file, err := ioutil.TempFile("/tmp/", "gomega-")
+	file, err:= os.CreateTemp("/tmp/", "gomega-")
 	if err != nil {
 		t.Fatalf("Error creating temp file: %v", err)
 	}
@@ -194,7 +195,7 @@ func fileMD5(t *testing.T, name string) string {
 	if err != nil {
 		t.Fatalf("Failed to open %q: %v", name, err)
 	}
-	b, err := ioutil.ReadAll(file)
+	b, err := io.ReadAll(file)
 	if err != nil {
 		t.Fatalf("Failed to read all %q: %v", name, err)
 	}
