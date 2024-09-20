@@ -30,6 +30,18 @@ type LoginResp struct {
 	U          string `json:"u"`
 }
 
+type SessionLoginMsg struct {
+	Cmd        APICommand `json:"a"`
+	Sek string `json:"sek"`
+}
+
+type SessionLoginResp struct {
+	Privk      string `json:"privk"`
+	Ach        int    `json:"ach"`
+	SessionKey string `json:"sek"`
+	U          string `json:"u"`
+}
+
 type LogoutMsg struct {
 	// "a" should be "sml" for logout
 	Cmd APICommand `json:"a"`

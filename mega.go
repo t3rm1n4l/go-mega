@@ -627,6 +627,116 @@ func (m *Mega) MultiFactorLogin(email, passwd, multiFactor string) error {
 	return nil
 }
 
+func getRandomBytes() ([]byte, error) {
+	b := make([]byte, 16)
+	_, err := rand.Read(b)
+	if err != nil {
+		return nil, err
+	}
+	return b, nil
+}
+
+func (m *Mega) SessionLogin(sessionString string) error {
+
+	// decode the session
+	session, err := base64urldecode(sessionString)
+	if err != nil {
+		return err
+	}
+	// session is a byte array with the following format: [version, encryptedMasterKey, sid]
+	// version is 1 byte
+	// encryptedMasterKey is 16 bytes
+	// sid is the remaining bytes
+	sessionVersion := session[0]
+	// TODO: right now, only session version 1 (normal login session) is supported
+	if sessionVersion != 1 {
+		return errors.New("unsupported session version")
+	}
+	encryptedMasterKey := session[1:17]
+	sid := session[17:]
+
+	// set the sid string
+	m.sid = base64urlencode(sid)
+
+	// build the session login message with a generated session key
+	var msg [1]SessionLoginMsg
+	msg[0].Cmd = COMMAND_LOGIN
+	rb, err := getRandomBytes()
+	if err != nil {
+		return err
+	}
+	generatedSek := base64urlencode(rb)
+	msg[0].Sek = generatedSek
+
+	// encode the message and send the request
+	req, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+	var result []byte
+	result, err = m.api_request(req)
+	if err != nil {
+		return err
+	}
+
+	// decode the response
+	var res [1]SessionLoginResp
+	err = json.Unmarshal(result, &res)
+	if err != nil {
+		return err
+	}
+
+	// set the user handle
+	m.uh = make([]byte, len(res[0].U))
+	copy(m.uh, res[0].U)
+
+	// set the session key
+	receivedSek, err := base64urldecode(res[0].SessionKey)
+	if err != nil {
+		return err
+	}
+	m.sek = make([]byte, len(receivedSek))
+	copy(m.sek, receivedSek)
+
+	// decrypt encrypted master key with session key
+	cipher, err := aes.NewCipher(m.sek)
+	if err != nil {
+		return err
+	}
+	m.k = make([]byte, 16)
+	cipher.Decrypt(m.k, encryptedMasterKey)
+
+	// misc
+	waitEvent := m.WaitEventsStart()
+	err = m.getFileSystem()
+	if err != nil {
+		return err
+	}
+	// Wait until the all the pending events have been received
+	m.WaitEvents(waitEvent, 5*time.Second)
+
+	return nil
+}
+
+func (m *Mega) DumpSession() (string, error) {
+	sid, err := base64urldecode(m.sid)
+	if err != nil {
+		return "", err
+	}
+
+	cipher, err := aes.NewCipher(m.sek)
+	if err != nil {
+		return "", err
+	}
+	encryptedMasterKey := make([]byte, 16)
+	cipher.Encrypt(encryptedMasterKey, m.k)
+
+	// TODO: right now, only session version 1 (normal login session) is supported
+	session := append([]byte{1}, append(encryptedMasterKey, sid...)...)
+
+	return base64urlencode(session), err
+}
+
 func (m *Mega) Logout() error {
 	var msg [1]LogoutMsg
 
