@@ -116,6 +116,8 @@ type Mega struct {
 	ssn string
 	// Session ID
 	sid string
+	// Session key
+	sek []byte
 	// Master key
 	k []byte
 	// User handle
@@ -570,6 +572,11 @@ func (m *Mega) login(email string, passwd string, multiFactor string) error {
 	}
 
 	err = json.Unmarshal(result, &res)
+	if err != nil {
+		return err
+	}
+
+	m.sek, err = base64urldecode(res[0].SessionKey)
 	if err != nil {
 		return err
 	}
