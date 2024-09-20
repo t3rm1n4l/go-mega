@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"math/big"
 	mrand "math/rand"
@@ -28,6 +27,7 @@ import (
 const (
 	API_URL              = "https://g.api.mega.co.nz"
 	BASE_DOWNLOAD_URL    = "https://mega.co.nz"
+	USER_AGENT           = "GoMega/1.0"
 	RETRIES              = 10
 	DOWNLOAD_WORKERS     = 3
 	MAX_DOWNLOAD_WORKERS = 30
@@ -41,6 +41,7 @@ const (
 
 type config struct {
 	baseurl    string
+	useragent  string
 	retries    int
 	dl_workers int
 	ul_workers int
@@ -51,6 +52,7 @@ type config struct {
 func newConfig() config {
 	return config{
 		baseurl:    API_URL,
+		useragent: USER_AGENT,
 		retries:    RETRIES,
 		dl_workers: DOWNLOAD_WORKERS,
 		ul_workers: UPLOAD_WORKERS,
@@ -114,6 +116,8 @@ type Mega struct {
 	ssn string
 	// Session ID
 	sid string
+	// Session key
+	sek []byte
 	// Master key
 	k []byte
 	// User handle
@@ -354,7 +358,7 @@ func New() *Mega {
 		config: cfg,
 		sn:     bigx.Int64(),
 		FS:     mgfs,
-		client: newHttpClient(cfg.timeout),
+		client: newHttpClient(cfg.useragent, cfg.timeout),
 	}
 	m.SetLogger(log.Printf)
 	m.SetDebugger(nil)
@@ -435,7 +439,7 @@ func (m *Mega) api_request(r []byte) (buf []byte, err error) {
 			_ = resp.Body.Close()
 			continue
 		}
-		buf, err = ioutil.ReadAll(resp.Body)
+		buf, err = io.ReadAll(resp.Body)
 		if err != nil {
 			_ = resp.Body.Close()
 			continue
@@ -482,7 +486,7 @@ func (m *Mega) prelogin(email string) error {
 
 	email = strings.ToLower(email) // mega uses lowercased emails for login purposes - FIXME is this true for prelogin?
 
-	msg[0].Cmd = "us0"
+	msg[0].Cmd = COMMAND_PRELOGIN
 	msg[0].User = email
 
 	req, err := json.Marshal(msg)
@@ -537,7 +541,7 @@ func (m *Mega) login(email string, passwd string, multiFactor string) error {
 	m.uh = make([]byte, len(uhandle))
 	copy(m.uh, uhandle)
 
-	msg[0].Cmd = "us"
+	msg[0].Cmd = COMMAND_LOGIN
 	msg[0].User = email
 	msg[0].Mfa = multiFactor
 
@@ -568,6 +572,11 @@ func (m *Mega) login(email string, passwd string, multiFactor string) error {
 	}
 
 	err = json.Unmarshal(result, &res)
+	if err != nil {
+		return err
+	}
+
+	m.sek, err = base64urldecode(res[0].SessionKey)
 	if err != nil {
 		return err
 	}
@@ -614,6 +623,133 @@ func (m *Mega) MultiFactorLogin(email, passwd, multiFactor string) error {
 
 	// Wait until the all the pending events have been received
 	m.WaitEvents(waitEvent, 5*time.Second)
+
+	return nil
+}
+
+func getRandomBytes() ([]byte, error) {
+	b := make([]byte, 16)
+	_, err := rand.Read(b)
+	if err != nil {
+		return nil, err
+	}
+	return b, nil
+}
+
+func (m *Mega) SessionLogin(sessionString string) error {
+
+	// decode the session
+	session, err := base64urldecode(sessionString)
+	if err != nil {
+		return err
+	}
+	// session is a byte array with the following format: [version, encryptedMasterKey, sid]
+	// version is 1 byte
+	// encryptedMasterKey is 16 bytes
+	// sid is the remaining bytes
+	sessionVersion := session[0]
+	// TODO: right now, only session version 1 (normal login session) is supported
+	if sessionVersion != 1 {
+		return errors.New("unsupported session version")
+	}
+	encryptedMasterKey := session[1:17]
+	sid := session[17:]
+
+	// set the sid string
+	m.sid = base64urlencode(sid)
+
+	// build the session login message with a generated session key
+	var msg [1]SessionLoginMsg
+	msg[0].Cmd = COMMAND_LOGIN
+	rb, err := getRandomBytes()
+	if err != nil {
+		return err
+	}
+	generatedSek := base64urlencode(rb)
+	msg[0].Sek = generatedSek
+
+	// encode the message and send the request
+	req, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+	var result []byte
+	result, err = m.api_request(req)
+	if err != nil {
+		return err
+	}
+
+	// decode the response
+	var res [1]SessionLoginResp
+	err = json.Unmarshal(result, &res)
+	if err != nil {
+		return err
+	}
+
+	// set the user handle
+	m.uh = make([]byte, len(res[0].U))
+	copy(m.uh, res[0].U)
+
+	// set the session key
+	receivedSek, err := base64urldecode(res[0].SessionKey)
+	if err != nil {
+		return err
+	}
+	m.sek = make([]byte, len(receivedSek))
+	copy(m.sek, receivedSek)
+
+	// decrypt encrypted master key with session key
+	cipher, err := aes.NewCipher(m.sek)
+	if err != nil {
+		return err
+	}
+	m.k = make([]byte, 16)
+	cipher.Decrypt(m.k, encryptedMasterKey)
+
+	// misc
+	waitEvent := m.WaitEventsStart()
+	err = m.getFileSystem()
+	if err != nil {
+		return err
+	}
+	// Wait until the all the pending events have been received
+	m.WaitEvents(waitEvent, 5*time.Second)
+
+	return nil
+}
+
+func (m *Mega) DumpSession() (string, error) {
+	sid, err := base64urldecode(m.sid)
+	if err != nil {
+		return "", err
+	}
+
+	cipher, err := aes.NewCipher(m.sek)
+	if err != nil {
+		return "", err
+	}
+	encryptedMasterKey := make([]byte, 16)
+	cipher.Encrypt(encryptedMasterKey, m.k)
+
+	// TODO: right now, only session version 1 (normal login session) is supported
+	session := append([]byte{1}, append(encryptedMasterKey, sid...)...)
+
+	return base64urlencode(session), err
+}
+
+func (m *Mega) Logout() error {
+	var msg [1]LogoutMsg
+
+	msg[0].Cmd = COMMAND_LOGOUT
+
+	req, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+	_, err = m.api_request(req)
+	if err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -667,7 +803,7 @@ func (m *Mega) GetUser() (UserResp, error) {
 	var msg [1]UserMsg
 	var res [1]UserResp
 
-	msg[0].Cmd = "ug"
+	msg[0].Cmd = COMMAND_GET_USER
 
 	req, err := json.Marshal(msg)
 	if err != nil {
@@ -687,7 +823,7 @@ func (m *Mega) GetQuota() (QuotaResp, error) {
 	var msg [1]QuotaMsg
 	var res [1]QuotaResp
 
-	msg[0].Cmd = "uq"
+	msg[0].Cmd = COMMAND_GET_USER_QUOTA
 	msg[0].Xfer = 1
 	msg[0].Strg = 1
 
@@ -924,7 +1060,7 @@ func (m *Mega) getFileSystem() error {
 	var msg [1]FilesMsg
 	var res [1]FilesResp
 
-	msg[0].Cmd = "f"
+	msg[0].Cmd = COMMAND_FILES
 	msg[0].C = 1
 
 	req, err := json.Marshal(msg)
@@ -990,7 +1126,7 @@ func (m *Mega) NewDownload(src *Node) (*Download, error) {
 	var res [1]DownloadResp
 
 	m.FS.mutex.Lock()
-	msg[0].Cmd = "g"
+	msg[0].Cmd = COMMAND_DOWNLOAD
 	msg[0].G = 1
 	msg[0].N = src.hash
 	if m.config.https {
@@ -1109,7 +1245,7 @@ func (d *Download) DownloadChunk(id int) (chunk []byte, err error) {
 		return nil, errors.New("retries exceeded")
 	}
 
-	chunk, err = ioutil.ReadAll(resp.Body)
+	chunk, err = io.ReadAll(resp.Body)
 	if err != nil {
 		_ = resp.Body.Close()
 		return nil, err
@@ -1313,7 +1449,7 @@ func (m *Mega) NewUpload(parent *Node, name string, fileSize int64) (*Upload, er
 	var res [1]UploadResp
 	parenthash := parent.GetHash()
 
-	msg[0].Cmd = "u"
+	msg[0].Cmd = COMMAND_UPLOAD
 	msg[0].S = fileSize
 	if m.config.https {
 		msg[0].SSL = 2
@@ -1464,7 +1600,7 @@ func (u *Upload) UploadChunk(id int, chunk []byte) (err error) {
 		return errors.New("retries exceeded")
 	}
 
-	chunk_resp, err = ioutil.ReadAll(rsp.Body)
+	chunk_resp, err = io.ReadAll(rsp.Body)
 	if err != nil {
 		_ = rsp.Body.Close()
 		return err
@@ -1532,7 +1668,7 @@ func (u *Upload) Finish() (node *Node, err error) {
 	var cmsg [1]UploadCompleteMsg
 	var cres [1]UploadCompleteResp
 
-	cmsg[0].Cmd = "p"
+	cmsg[0].Cmd = COMMAND_UPLOAD_COMPLETE
 	cmsg[0].T = u.parenthash
 	cmsg[0].N[0].H = string(u.completion_handle)
 	cmsg[0].N[0].T = FILE
@@ -1667,7 +1803,7 @@ func (m *Mega) Move(src *Node, parent *Node) error {
 	var msg [1]MoveFileMsg
 	var err error
 
-	msg[0].Cmd = "m"
+	msg[0].Cmd = COMMAND_MOVE
 	msg[0].N = src.hash
 	msg[0].T = parent.hash
 	msg[0].I, err = randString(10)
@@ -1719,7 +1855,7 @@ func (m *Mega) Rename(src *Node, name string) error {
 		return err
 	}
 
-	msg[0].Cmd = "a"
+	msg[0].Cmd = COMMAND_RENAME
 	msg[0].Attr = attr_data
 	msg[0].Key = base64urlencode(key)
 	msg[0].N = src.hash
@@ -1777,7 +1913,7 @@ func (m *Mega) CreateDir(name string, parent *Node) (*Node, error) {
 		return nil, err
 	}
 
-	msg[0].Cmd = "p"
+	msg[0].Cmd = COMMAND_UPLOAD_COMPLETE
 	msg[0].T = parent.hash
 	msg[0].N[0].H = "xxxxxxxx"
 	msg[0].N[0].T = FOLDER
@@ -1820,7 +1956,7 @@ func (m *Mega) Delete(node *Node, destroy bool) error {
 
 	var msg [1]FileDeleteMsg
 	var err error
-	msg[0].Cmd = "d"
+	msg[0].Cmd = COMMAND_DELETE
 	msg[0].N = node.hash
 	msg[0].I, err = randString(10)
 	if err != nil {
@@ -1841,6 +1977,30 @@ func (m *Mega) Delete(node *Node, destroy bool) error {
 	delete(m.FS.lookup, node.hash)
 
 	return nil
+}
+
+func (m *Mega) GetUserSessions() ([]GetUserSessionsResp, error) {
+	var msg [1]GetUserSessionsMsg
+
+	msg[0].Cmd = COMMAND_GET_USER_SESSIONS
+	msg[0].IdAndAliveInfo = 1
+	msg[0].DeviceIDInfo = 1
+
+	request, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
+	result, err := m.api_request(request)
+	if err != nil {
+		return nil, err
+	}
+
+	var res [1][]GetUserSessionsResp
+	if err := json.Unmarshal(result, &res); err != nil {
+		return nil, err
+	}
+
+	return res[0], nil
 }
 
 // process an add node event
@@ -1908,6 +2068,10 @@ func (m *Mega) processDeleteNode(evRaw []byte) error {
 	return nil
 }
 
+func (m *Mega) processEventStub(evRaw []byte) error {
+	return ENOTIMPLEMENTED
+}
+
 // Listen for server event notifications and play actions
 func (m *Mega) pollEvents() {
 	var err error
@@ -1935,7 +2099,7 @@ func (m *Mega) pollEvents() {
 			continue
 		}
 
-		buf, err := ioutil.ReadAll(resp.Body)
+		buf, err := io.ReadAll(resp.Body)
 		if err != nil {
 			m.logf("pollEvents: Error reading body: %v", err)
 			_ = resp.Body.Close()
@@ -2004,11 +2168,11 @@ func (m *Mega) pollEvents() {
 				m.logf("pollEvents: Couldn't parse event from server: %v: %s", err, evRaw)
 				continue
 			}
-			m.debugf("pollEvents: Parsing event %q: %s", gev.Cmd, evRaw)
+			m.debugf("pollEvents: Parsing event %q: %s", gev.GEventType, evRaw)
 
 			// Work out what to do with the event
 			var process func([]byte) error
-			switch gev.Cmd {
+			switch gev.GEventType {
 			case "t": // node addition
 				process = m.processAddNode
 			case "u": // node update
@@ -2016,29 +2180,44 @@ func (m *Mega) pollEvents() {
 			case "d": // node deletion
 				process = m.processDeleteNode
 			case "s", "s2": // share addition/update/revocation
+				process = m.processEventStub
 			case "c": // contact addition/update
+				process = m.processEventStub
 			case "k": // crypto key request
+				process = m.processEventStub
 			case "fa": // file attribute update
+				process = m.processEventStub
 			case "ua": // user attribute update
+				process = m.processEventStub
 			case "psts": // account updated
+				process = m.processEventStub
 			case "ipc": // incoming pending contact request (to us)
+				process = m.processEventStub
 			case "opc": // outgoing pending contact request (from us)
+				process = m.processEventStub
 			case "upci": // incoming pending contact request update (accept/deny/ignore)
+				process = m.processEventStub
 			case "upco": // outgoing pending contact request update (from them, accept/deny/ignore)
+				process = m.processEventStub
 			case "ph": // public links handles
+				process = m.processEventStub
 			case "se": // set email
+				process = m.processEventStub
 			case "mcc": // chat creation / peer's invitation / peer's removal
+				process = m.processEventStub
 			case "mcna": // granted / revoked access to a node
+				process = m.processEventStub
 			case "uac": // user access control
+				process = m.processEventStub
 			default:
-				m.debugf("pollEvents: Unknown message %q received: %s", gev.Cmd, evRaw)
+				m.debugf("pollEvents: Unknown message %q received: %s", gev.GEventType, evRaw)
 			}
 
 			// process the event if we can
 			if process != nil {
 				err := process(evRaw)
 				if err != nil {
-					m.logf("pollEvents: Error processing event %q '%s': %v", gev.Cmd, evRaw, err)
+					m.logf("pollEvents: Error processing event %q '%s': %v", gev.GEventType, evRaw, err)
 				}
 			}
 		}
@@ -2049,7 +2228,7 @@ func (m *Mega) getLink(n *Node) (string, error) {
 	var msg [1]GetLinkMsg
 	var res [1]string
 
-	msg[0].Cmd = "l"
+	msg[0].Cmd = COMMAND_GET_LINK
 	msg[0].N = n.GetHash()
 
 	req, err := json.Marshal(msg)

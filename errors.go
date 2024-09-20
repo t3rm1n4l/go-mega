@@ -42,6 +42,9 @@ var (
 
 	// Config errors
 	EWORKER_LIMIT_EXCEEDED = errors.New("Maximum worker limit exceeded")
+
+	// Unimplemented
+	ENOTIMPLEMENTED = errors.New("Not implemented")
 )
 
 type ErrorMsg int

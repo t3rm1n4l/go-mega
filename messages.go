@@ -3,7 +3,7 @@ package mega
 import "encoding/json"
 
 type PreloginMsg struct {
-	Cmd  string `json:"a"`
+	Cmd  APICommand `json:"a"`
 	User string `json:"user"`
 }
 
@@ -13,7 +13,7 @@ type PreloginResp struct {
 }
 
 type LoginMsg struct {
-	Cmd        string `json:"a"`
+	Cmd        APICommand `json:"a"`
 	User       string `json:"user"`
 	Handle     string `json:"uh"`
 	SessionKey string `json:"sek,omitempty"`
@@ -30,8 +30,25 @@ type LoginResp struct {
 	U          string `json:"u"`
 }
 
+type SessionLoginMsg struct {
+	Cmd        APICommand `json:"a"`
+	Sek string `json:"sek"`
+}
+
+type SessionLoginResp struct {
+	Privk      string `json:"privk"`
+	Ach        int    `json:"ach"`
+	SessionKey string `json:"sek"`
+	U          string `json:"u"`
+}
+
+type LogoutMsg struct {
+	// "a" should be "sml" for logout
+	Cmd APICommand `json:"a"`
+}
+
 type UserMsg struct {
-	Cmd string `json:"a"`
+	Cmd APICommand `json:"a"`
 }
 
 type UserResp struct {
@@ -49,7 +66,7 @@ type UserResp struct {
 
 type QuotaMsg struct {
 	// Action, should be "uq" for quota request
-	Cmd string `json:"a"`
+	Cmd APICommand `json:"a"`
 	// xfer should be 1
 	Xfer int `json:"xfer"`
 	// Without strg=1 only reports total capacity for account
@@ -66,7 +83,7 @@ type QuotaResp struct {
 }
 
 type FilesMsg struct {
-	Cmd string `json:"a"`
+	Cmd APICommand `json:"a"`
 	C   int    `json:"c"`
 }
 
@@ -108,12 +125,12 @@ type FileAttr struct {
 }
 
 type GetLinkMsg struct {
-	Cmd string `json:"a"`
+	Cmd APICommand `json:"a"`
 	N   string `json:"n"`
 }
 
 type DownloadMsg struct {
-	Cmd string `json:"a"`
+	Cmd APICommand `json:"a"`
 	G   int    `json:"g"`
 	P   string `json:"p,omitempty"`
 	N   string `json:"n,omitempty"`
@@ -128,7 +145,7 @@ type DownloadResp struct {
 }
 
 type UploadMsg struct {
-	Cmd string `json:"a"`
+	Cmd APICommand `json:"a"`
 	S   int64  `json:"s"`
 	SSL int    `json:"ssl,omitempty"`
 }
@@ -138,7 +155,7 @@ type UploadResp struct {
 }
 
 type UploadCompleteMsg struct {
-	Cmd string `json:"a"`
+	Cmd APICommand `json:"a"`
 	T   string `json:"t"`
 	N   [1]struct {
 		H string `json:"h"`
@@ -154,20 +171,20 @@ type UploadCompleteResp struct {
 }
 
 type FileInfoMsg struct {
-	Cmd string `json:"a"`
+	Cmd APICommand `json:"a"`
 	F   int    `json:"f"`
 	P   string `json:"p"`
 }
 
 type MoveFileMsg struct {
-	Cmd string `json:"a"`
+	Cmd APICommand `json:"a"`
 	N   string `json:"n"`
 	T   string `json:"t"`
 	I   string `json:"i"`
 }
 
 type FileAttrMsg struct {
-	Cmd  string `json:"a"`
+	Cmd  APICommand `json:"a"`
 	Attr string `json:"attr"`
 	Key  string `json:"key"`
 	N    string `json:"n"`
@@ -175,15 +192,53 @@ type FileAttrMsg struct {
 }
 
 type FileDeleteMsg struct {
-	Cmd string `json:"a"`
+	Cmd APICommand `json:"a"`
 	N   string `json:"n"`
 	I   string `json:"i"`
+}
+
+type GetUserSessionsMsg struct {
+	Cmd APICommand `json:"a"`
+	IdAndAliveInfo   int    `json:"x"`
+	DeviceIDInfo   int    `json:"d"`
+}
+
+type GetUserSessionsResp struct {
+	DateTime int
+	Unused int
+	UserAgent string
+	IPAddress string
+	Country string
+	IsCurrent int
+	SessionID string
+	IsActive int
+	DeviceID int
+}
+
+type getUserSessionsError struct {
+	message string
+}
+
+func (e *getUserSessionsError) Error() string {
+	return e.message
+}
+
+func (n *GetUserSessionsResp) UnmarshalJSON(buf []byte) error {
+	tmp := []interface{}{&n.DateTime, &n.Unused, &n.UserAgent, &n.IPAddress, &n.Country, &n.IsCurrent, &n.SessionID, &n.IsActive, &n.DeviceID}
+	wantLen := len(tmp)
+	if err := json.Unmarshal(buf, &tmp); err != nil {
+		return err
+	}
+	if g, e := len(tmp), wantLen; g != e {
+		return &getUserSessionsError{message: "wrong number of fields in GetUserSessionsResp"}
+	}
+	return nil
 }
 
 // GenericEvent is a generic event for parsing the Cmd type before
 // decoding more specifically
 type GenericEvent struct {
-	Cmd string `json:"a"`
+	GEventType string `json:"a"`
 }
 
 // FSEvent - event for various file system events
@@ -192,7 +247,7 @@ type GenericEvent struct {
 // Update attr (a=u)
 // New nodes (a=t)
 type FSEvent struct {
-	Cmd string `json:"a"`
+	FSEventType string `json:"a"`
 
 	T struct {
 		Files []FSNode `json:"f"`

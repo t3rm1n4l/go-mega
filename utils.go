@@ -10,29 +10,36 @@ import (
 	"encoding/json"
 	"errors"
 	"math/big"
-	"net"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
 )
 
-func newHttpClient(timeout time.Duration) *http.Client {
-	// TODO: Need to test this out
-	// Doesn't seem to work as expected
-	c := &http.Client{
-		Transport: &http.Transport{
-			Dial: func(netw, addr string) (net.Conn, error) {
-				c, err := net.DialTimeout(netw, addr, timeout)
-				if err != nil {
-					return nil, err
-				}
-				return c, nil
-			},
+type CustomTransport struct {
+    Transport http.RoundTripper
+	Proxy func(*http.Request) (*url.URL, error)
+    UserAgent string
+}
+
+func (t *CustomTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+    req.Header.Set("User-Agent", t.UserAgent)
+    return t.Transport.RoundTrip(req)
+}
+
+func newHttpClient(userAgent string, timeout time.Duration) *http.Client {
+
+    client := &http.Client{
+        Transport: &CustomTransport{
+            Transport: http.DefaultTransport,
 			Proxy: http.ProxyFromEnvironment,
-		},
-	}
-	return c
+            UserAgent: userAgent,
+        },
+		Timeout: timeout,
+    }
+
+	return client
 }
 
 // bytes_to_a32 converts the byte slice b to uint32 slice considering

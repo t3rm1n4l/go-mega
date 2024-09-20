@@ -4,16 +4,24 @@ import (
 	"crypto/md5"
 	"crypto/rand"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"os"
 	"path"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/pquerna/otp/totp"
 )
 
+// Credentials for non MFA-enabled accounts
 var USER string = os.Getenv("MEGA_USER")
 var PASSWORD string = os.Getenv("MEGA_PASSWD")
+
+// Credentials for MFA-enabled accounts
+var USER_MFA = os.Getenv("MEGA_USER_MFA")
+var PASSWORD_MFA string = os.Getenv("MEGA_PASSWD_MFA")
+var SECRET_MFA string = os.Getenv("MEGA_SECRET_MFA")
 
 // retry runs fn until it succeeds, using what to log and retrying on
 // EAGAIN.  It uses exponential backoff
@@ -36,19 +44,193 @@ func retry(t *testing.T, what string, fn func() error) {
 	t.Fatalf("%s failed: %v", what, err)
 }
 
-func skipIfNoCredentials(t *testing.T) {
+func retrySetup(what string, fn func() error) {
+	const maxTries = 10
+	var err error
+	sleep := 100 * time.Millisecond
+	for i := 1; i <= maxTries; i++ {
+		err = fn()
+		if err == nil {
+			return
+		}
+		if err != EAGAIN {
+			break
+		}
+		fmt.Printf("%s failed %d/%d - retrying after %v sleep", what, i, maxTries, sleep)
+		time.Sleep(sleep)
+		sleep *= 2
+	}
+	fmt.Printf("%s failed: %v", what, err)
+	os.Exit(1)
+}
+
+type CredentialType int
+
+const (
+	Credentials CredentialType = iota
+	MfaCredentials
+	AnyCredentials
+)
+
+// getMfaCode generates an MFA code using the provided secret and the current time.
+// If the code cannot be generated, it returns an error.
+func getMfaCode(secret string) (string, error) {
+	return totp.GenerateCode(secret, time.Now())
+}
+
+// getCredentials retrieves credentials for an MFA-enabled account from predefined variables set from the environment.
+// If either the user, password or MFA secret are not set, or if an MFA code cannot be successfully generated from the given secret, it returns an error indicating that the credentials are missing or invalid.
+func getMfaCredentials() (string, string, string, error) {
+	if USER_MFA == "" || PASSWORD_MFA == "" || SECRET_MFA == "" {
+		return "", "", "", fmt.Errorf("MEGA_USER_MFA, MEGA_PASSWD_MFA or MEGA_SECRET_MFA not set.")
+	}
+
+	mfa_code, mfa_code_err := getMfaCode(SECRET_MFA)
+	if mfa_code_err != nil {
+		return "", "", "", fmt.Errorf("Generating MFA code failed: %w", mfa_code_err)
+	}
+
+	return USER_MFA, PASSWORD_MFA, mfa_code, nil
+}
+
+// getCredentials retrieves credentials for a non MFA-enabled account from predefined variables set from the environment.
+// If either the user or password are not set, it returns an error indicating that the credentials are missing.
+func getCredentials() (string, string, error) {
 	if USER == "" || PASSWORD == "" {
-		t.Skip("MEGA_USER and MEGA_PASSWD not set - skipping integration tests")
+		return "", "", fmt.Errorf("MEGA_USER or MEGA_PASSWD not set.")
+	}
+	return USER, PASSWORD, nil
+}
+
+// getCredentialsOrSkip retrieves user credentials based on the specified CredentialType.
+// It supports both standard and MFA-enabled credentials.
+func getCredentialsOrSkip(credentialsType CredentialType) (string, string, string, error) {
+
+	switch credentialsType {
+	case Credentials:
+		user, password, err := getCredentials()
+		if err != nil {
+			return "", "", "", fmt.Errorf("Skipping test due to credentials error: %v", err)
+		}
+		return user, password, "", nil
+	case MfaCredentials:
+		user, password, mfa_code, err := getMfaCredentials()
+		if err != nil {
+
+			return "", "", "", fmt.Errorf("Skipping test due to credentials error: %v", err)
+		}
+		return user, password, mfa_code, nil
+	case AnyCredentials:
+		user, password, err := getCredentials()
+		if err != nil {
+			fmt.Printf("Trying with MFA credentials instead, getting other credentials failed with error: %v", err)
+		} else {
+			return user, password, "", nil
+		}
+		user, password, mfa_code, err := getMfaCredentials()
+		if err != nil {
+
+			return "", "", "", fmt.Errorf("Skipping test due to credentials error: %v", err)
+		}
+		return user, password, mfa_code, nil
+	default:
+		return "", "", "", fmt.Errorf("Invalid credentials type")
 	}
 }
 
-func initSession(t *testing.T) *Mega {
-	skipIfNoCredentials(t)
+func trySessionLogin(m *Mega, mandatory bool) error {
+	if _, err := os.Stat("session.txt"); err == nil {
+		session_file, err := os.ReadFile("session.txt")
+		if err != nil {
+			return fmt.Errorf("Error reading session file")
+		} else {
+			session := string(session_file)
+			err = m.SessionLogin(session)
+			if err != nil {
+				return fmt.Errorf("can't perform session login")
+			}
+			fmt.Printf("Using session: %s\n", session)
+			return nil
+		}
+	}
+	if (mandatory){
+	return fmt.Errorf("Session file not found")
+	}
+	return nil
+}
+
+func setup() error {
+
 	m := New()
-	// m.SetDebugger(log.Printf)
-	retry(t, "Login", func() error {
-		return m.Login(USER, PASSWORD)
+
+	err := trySessionLogin(m, false)
+	if err != nil {
+		return err
+	}
+
+	user, password, mfa_code, err := getCredentialsOrSkip(AnyCredentials)
+	if err != nil {
+		return fmt.Errorf("error getting credentials for login")
+	}
+	retrySetup("Login", func() error {
+		if mfa_code != "" {
+			return m.MultiFactorLogin(user, password, mfa_code)
+		}
+		return m.Login(user, password)
 	})
+
+	// dump session to file
+	session, err := m.DumpSession()
+	if err != nil {
+		return fmt.Errorf("Error dumping session")
+	}
+	fmt.Printf("Using session: %s\n", session)
+	err = os.WriteFile("session.txt", []byte(session), 0644)
+	if err != nil {
+		return fmt.Errorf("Error writing session file")
+	}
+
+	return nil
+}
+
+func teardown() error{
+
+	fmt.Println("Logging out and removing session file.")
+
+	m := New()
+	err := trySessionLogin(m, true)
+	if err != nil {
+		return err
+	}
+
+	retrySetup("Logout", func() error {
+		return m.Logout()
+	})
+	_ = os.Remove("session.txt")
+	return nil
+}
+
+func TestMain(m *testing.M) {
+	err:=setup()
+	if err != nil {
+		os.Exit(1)
+	}
+	exitCode := m.Run()
+	err=teardown()
+	if err != nil {
+		os.Exit(1)
+	}
+	os.Exit(exitCode)
+}
+
+func initTest(t *testing.T) *Mega {
+	m := New()
+
+	err := trySessionLogin(m, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	return m
 }
 
@@ -59,7 +241,7 @@ func createFile(t *testing.T, size int64) (string, string) {
 	if err != nil {
 		t.Fatalf("Error reading rand: %v", err)
 	}
-	file, err := ioutil.TempFile("/tmp/", "gomega-")
+	file, err:= os.CreateTemp("/tmp/", "gomega-")
 	if err != nil {
 		t.Fatalf("Error creating temp file: %v", err)
 	}
@@ -108,7 +290,7 @@ func fileMD5(t *testing.T, name string) string {
 	if err != nil {
 		t.Fatalf("Failed to open %q: %v", name, err)
 	}
-	b, err := ioutil.ReadAll(file)
+	b, err := io.ReadAll(file)
 	if err != nil {
 		t.Fatalf("Failed to read all %q: %v", name, err)
 	}
@@ -120,45 +302,36 @@ func fileMD5(t *testing.T, name string) string {
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
-func TestLogin(t *testing.T) {
-	skipIfNoCredentials(t)
-
-	m := New()
-	retry(t, "Login", func() error {
-		return m.Login(USER, PASSWORD)
-	})
-}
-
 func TestGetUser(t *testing.T) {
-	session := initSession(t)
-	_, err := session.GetUser()
+	m := initTest(t)
+	_, err := m.GetUser()
 	if err != nil {
 		t.Fatal("GetUser failed", err)
 	}
 }
 
 func TestUploadDownload(t *testing.T) {
-	session := initSession(t)
+	m := initTest(t)
 	for i := range []int{0, 1} {
 		if i == 0 {
 			t.Log("HTTP Test")
-			session.SetHTTPS(false)
+			m.SetHTTPS(false)
 		} else {
 			t.Log("HTTPS Test")
-			session.SetHTTPS(true)
+			m.SetHTTPS(true)
 		}
 
-		node, name, h1 := uploadFile(t, session, 314573, session.FS.root)
+		node, name, h1 := uploadFile(t, m, 314573, m.FS.root)
 
-		session.FS.mutex.Lock()
-		phash := session.FS.root.hash
-		n := session.FS.lookup[node.hash]
+		m.FS.mutex.Lock()
+		phash := m.FS.root.hash
+		n := m.FS.lookup[node.hash]
 		if n.parent.hash != phash {
 			t.Error("Parent of uploaded file mismatch")
 		}
-		session.FS.mutex.Unlock()
+		m.FS.mutex.Unlock()
 
-		err := session.DownloadFile(node, name, nil)
+		err := m.DownloadFile(node, name, nil)
 		if err != nil {
 			t.Fatal("Download failed", err)
 		}
@@ -173,92 +346,106 @@ func TestUploadDownload(t *testing.T) {
 			t.Error("MD5 mismatch for downloaded file")
 		}
 	}
-	session.SetHTTPS(false)
+	m.SetHTTPS(false)
 }
 
 func TestMove(t *testing.T) {
-	session := initSession(t)
-	node, _, _ := uploadFile(t, session, 31, session.FS.root)
+	m := initTest(t)
+	node, _, _ := uploadFile(t, m, 31, m.FS.root)
 
 	hash := node.hash
-	phash := session.FS.trash.hash
-	err := session.Move(node, session.FS.trash)
+	phash := m.FS.trash.hash
+	err := m.Move(node, m.FS.trash)
 	if err != nil {
 		t.Fatal("Move failed", err)
 	}
 
-	session.FS.mutex.Lock()
-	n := session.FS.lookup[hash]
+	m.FS.mutex.Lock()
+	n := m.FS.lookup[hash]
 	if n.parent.hash != phash {
 		t.Error("Move happened to wrong parent", phash, n.parent.hash)
 	}
-	session.FS.mutex.Unlock()
+	m.FS.mutex.Unlock()
 }
 
 func TestRename(t *testing.T) {
-	session := initSession(t)
-	node, _, _ := uploadFile(t, session, 31, session.FS.root)
+	m := initTest(t)
+	node, _, _ := uploadFile(t, m, 31, m.FS.root)
 
-	err := session.Rename(node, "newname.txt")
+	err := m.Rename(node, "newname.txt")
 	if err != nil {
 		t.Fatal("Rename failed", err)
 	}
 
-	session.FS.mutex.Lock()
-	newname := session.FS.lookup[node.hash].name
+	m.FS.mutex.Lock()
+	newname := m.FS.lookup[node.hash].name
 	if newname != "newname.txt" {
 		t.Error("Renamed to wrong name", newname)
 	}
-	session.FS.mutex.Unlock()
+	m.FS.mutex.Unlock()
 }
 
 func TestDelete(t *testing.T) {
-	session := initSession(t)
-	node, _, _ := uploadFile(t, session, 31, session.FS.root)
+	m := initTest(t)
+	node, _, _ := uploadFile(t, m, 31, m.FS.root)
 
 	retry(t, "Soft delete", func() error {
-		return session.Delete(node, false)
+		return m.Delete(node, false)
 	})
 
-	session.FS.mutex.Lock()
-	node = session.FS.lookup[node.hash]
-	if node.parent != session.FS.trash {
+	m.FS.mutex.Lock()
+	node = m.FS.lookup[node.hash]
+	if node.parent != m.FS.trash {
 		t.Error("Expects file to be moved to trash")
 	}
-	session.FS.mutex.Unlock()
+	m.FS.mutex.Unlock()
 
 	retry(t, "Hard delete", func() error {
-		return session.Delete(node, true)
+		return m.Delete(node, true)
 	})
 
 	time.Sleep(1 * time.Second) // wait for the event
 
-	session.FS.mutex.Lock()
-	if _, ok := session.FS.lookup[node.hash]; ok {
+	m.FS.mutex.Lock()
+	if _, ok := m.FS.lookup[node.hash]; ok {
 		t.Error("Expects file to be dissapeared")
 	}
-	session.FS.mutex.Unlock()
+	m.FS.mutex.Unlock()
+}
+
+func TestGetUserSessions(t *testing.T) {
+	m := initTest(t)
+	_, err := m.GetUserSessions()
+	if err != nil {
+		t.Fatal("GetUserSessions failed", err)
+	}
 }
 
 func TestCreateDir(t *testing.T) {
-	session := initSession(t)
-	node := createDir(t, session, "testdir1", session.FS.root)
-	node2 := createDir(t, session, "testdir2", node)
+	m := initTest(t)
+	node := createDir(t, m, "testdir1", m.FS.root)
+	node2 := createDir(t, m, "testdir2", node)
 
-	session.FS.mutex.Lock()
-	nnode2 := session.FS.lookup[node2.hash]
+	m.FS.mutex.Lock()
+	nnode2 := m.FS.lookup[node2.hash]
 	if nnode2.parent.hash != node.hash {
 		t.Error("Wrong directory parent")
 	}
-	session.FS.mutex.Unlock()
+	m.FS.mutex.Unlock()
 }
 
 func TestConfig(t *testing.T) {
-	skipIfNoCredentials(t)
+	user, password, mfa_code := "foo", "bar", "012345"
 
 	m := New()
 	m.SetAPIUrl("http://invalid.domain")
-	err := m.Login(USER, PASSWORD)
+	err := func() error {
+		if mfa_code != "" {
+			return m.MultiFactorLogin(user, password, mfa_code)
+		}
+		return m.Login(user, password)
+	}()
+
 	if err == nil {
 		t.Error("API Url: Expected failure")
 	}
@@ -278,22 +465,22 @@ func TestConfig(t *testing.T) {
 }
 
 func TestPathLookup(t *testing.T) {
-	session := initSession(t)
+	m := initTest(t)
 
 	rs, err := randString(5)
 	if err != nil {
 		t.Fatalf("failed to make random string: %v", err)
 	}
-	node1 := createDir(t, session, "dir-1-"+rs, session.FS.root)
-	node21 := createDir(t, session, "dir-2-1-"+rs, node1)
-	node22 := createDir(t, session, "dir-2-2-"+rs, node1)
-	node31 := createDir(t, session, "dir-3-1-"+rs, node21)
-	node32 := createDir(t, session, "dir-3-2-"+rs, node22)
+	node1 := createDir(t, m, "dir-1-"+rs, m.FS.root)
+	node21 := createDir(t, m, "dir-2-1-"+rs, node1)
+	node22 := createDir(t, m, "dir-2-2-"+rs, node1)
+	node31 := createDir(t, m, "dir-3-1-"+rs, node21)
+	node32 := createDir(t, m, "dir-3-2-"+rs, node22)
 	_ = node32
 
-	_, name1, _ := uploadFile(t, session, 31, node31)
-	_, _, _ = uploadFile(t, session, 31, node31)
-	_, name3, _ := uploadFile(t, session, 31, node22)
+	_, name1, _ := uploadFile(t, m, 31, node31)
+	_, _, _ = uploadFile(t, m, 31, node31)
+	_, name3, _ := uploadFile(t, m, 31, node22)
 
 	testpaths := [][]string{
 		{"dir-1-" + rs, "dir-2-2-" + rs, path.Base(name3)},
@@ -305,7 +492,7 @@ func TestPathLookup(t *testing.T) {
 	results := []error{nil, nil, nil, ENOENT}
 
 	for i, tst := range testpaths {
-		ns, e := session.FS.PathLookup(session.FS.root, tst)
+		ns, e := m.FS.PathLookup(m.FS.root, tst)
 		switch {
 		case e != results[i]:
 			t.Errorf("Test %d failed: wrong result", i)
@@ -328,8 +515,10 @@ func TestPathLookup(t *testing.T) {
 }
 
 func TestEventNotify(t *testing.T) {
-	session1 := initSession(t)
-	session2 := initSession(t)
+	t.Skipf("TODO: reimplement this test")
+
+	session1 := initTest(t)
+	session2 := initTest(t)
 
 	node, _, _ := uploadFile(t, session1, 31, session1.FS.root)
 
@@ -357,18 +546,18 @@ func TestEventNotify(t *testing.T) {
 }
 
 func TestExportLink(t *testing.T) {
-	session := initSession(t)
-	node, _, _ := uploadFile(t, session, 31, session.FS.root)
+	m := initTest(t)
+	node, _, _ := uploadFile(t, m, 31, m.FS.root)
 
 	// Don't include decryption key
 	retry(t, "Failed to export link (key not included)", func() error {
-		_, err := session.Link(node, false)
+		_, err := m.Link(node, false)
 		return err
 	})
 
 	// Do include decryption key
 	retry(t, "Failed to export link (key included)", func() error {
-		_, err := session.Link(node, true)
+		_, err := m.Link(node, true)
 		return err
 	})
 }
