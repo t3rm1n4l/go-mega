@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -373,4 +374,14 @@ func randString(l int) (string, error) {
 	enc.Encode(d, b)
 	d = d[:l]
 	return strings.NewReplacer("/", "A", "+", "B").Replace(string(d)), nil
+}
+
+// halfCPUCores returns half the number of logical CPU cores available.
+// The return value is always at least 1, even if the system reports fewer than 2 cores.
+func halfCPUCores() int {
+	n := runtime.NumCPU() / 2
+	if n < 1 {
+		return 1
+	}
+	return n
 }

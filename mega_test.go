@@ -3,17 +3,18 @@ package mega
 import (
 	"crypto/md5"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"os"
-	"path"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 )
 
-var USER string = os.Getenv("MEGA_USER")
-var PASSWORD string = os.Getenv("MEGA_PASSWD")
+var USER string = os.Getenv("X_MEGA_USER")
+var PASSWORD string = os.Getenv("X_MEGA_PASSWORD")
 
 // retry runs fn until it succeeds, using what to log and retrying on
 // EAGAIN.  It uses exponential backoff
@@ -38,7 +39,7 @@ func retry(t *testing.T, what string, fn func() error) {
 
 func skipIfNoCredentials(t *testing.T) {
 	if USER == "" || PASSWORD == "" {
-		t.Skip("MEGA_USER and MEGA_PASSWD not set - skipping integration tests")
+		t.Skip("X_MEGA_USER and X_MEGA_PASSWD not set - skipping integration tests")
 	}
 }
 
@@ -59,10 +60,11 @@ func createFile(t *testing.T, size int64) (string, string) {
 	if err != nil {
 		t.Fatalf("Error reading rand: %v", err)
 	}
-	file, err := ioutil.TempFile("/tmp/", "gomega-")
+	file, err := ioutil.TempFile(os.TempDir(), "gomega-")
 	if err != nil {
 		t.Fatalf("Error creating temp file: %v", err)
 	}
+	defer file.Close()
 	_, err = file.Write(b)
 	if err != nil {
 		t.Fatalf("Error writing temp file: %v", err)
@@ -108,6 +110,7 @@ func fileMD5(t *testing.T, name string) string {
 	if err != nil {
 		t.Fatalf("Failed to open %q: %v", name, err)
 	}
+	defer file.Close()
 	b, err := ioutil.ReadAll(file)
 	if err != nil {
 		t.Fatalf("Failed to read all %q: %v", name, err)
@@ -231,7 +234,7 @@ func TestDelete(t *testing.T) {
 		return session.Delete(node, true)
 	})
 
-	time.Sleep(1 * time.Second) // wait for the event
+	time.Sleep(5 * time.Second) // wait for the event
 
 	session.FS.mutex.Lock()
 	if _, ok := session.FS.lookup[node.hash]; ok {
@@ -296,23 +299,25 @@ func TestPathLookup(t *testing.T) {
 	_, name3, _ := uploadFile(t, session, 31, node22)
 
 	testpaths := [][]string{
-		{"dir-1-" + rs, "dir-2-2-" + rs, path.Base(name3)},
+		{"dir-1-" + rs, "dir-2-2-" + rs, filepath.Base(name3)},
 		{"dir-1-" + rs, "dir-2-1-" + rs, "dir-3-1-" + rs},
-		{"dir-1-" + rs, "dir-2-1-" + rs, "dir-3-1-" + rs, path.Base(name1)},
+		{"dir-1-" + rs, "dir-2-1-" + rs, "dir-3-1-" + rs, filepath.Base(name1)},
 		{"dir-1-" + rs, "dir-2-1-" + rs, "none"},
 	}
 
 	results := []error{nil, nil, nil, ENOENT}
 
+	//time.Sleep(5 * time.Second) // wait for the events to be processed
+
 	for i, tst := range testpaths {
+		//t.Logf("Test %d: Lookup %v", i, tst)
 		ns, e := session.FS.PathLookup(session.FS.root, tst)
 		switch {
-		case e != results[i]:
-			t.Errorf("Test %d failed: wrong result", i)
+		case !errors.Is(e, results[i]):
+			t.Errorf("Test %d failed: wrong result, %v", i, tst)
 		default:
 			if results[i] == nil && len(tst) != len(ns) {
 				t.Errorf("Test %d failed: result array len (%d) mismatch", i, len(ns))
-
 			}
 
 			arr := []string{}
@@ -332,10 +337,11 @@ func TestEventNotify(t *testing.T) {
 	session2 := initSession(t)
 
 	node, _, _ := uploadFile(t, session1, 31, session1.FS.root)
+	nodeHash := node.GetHash() // Store the hash before the loop
 
 	for i := 0; i < 60; i++ {
-		time.Sleep(time.Second * 1)
-		node = session2.FS.HashLookup(node.GetHash())
+		time.Sleep(time.Second * 2)
+		node = session2.FS.HashLookup(nodeHash) // Use the stored hash
 		if node != nil {
 			break
 		}
@@ -349,8 +355,13 @@ func TestEventNotify(t *testing.T) {
 		return session2.Delete(node, true)
 	})
 
-	time.Sleep(time.Second * 5)
-	node = session1.FS.HashLookup(node.hash)
+	for i := 0; i < 20; i++ {
+		node = session1.FS.HashLookup(node.GetHash())
+		if node == nil {
+			break
+		}
+		time.Sleep(time.Second * 5)
+	}
 	if node != nil {
 		t.Fatal("Expects file to not-found in first client's FS")
 	}

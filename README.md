@@ -27,8 +27,9 @@ Please find full doc at [https://pkg.go.dev/github.com/t3rm1n4l/go-mega](https:/
 
 ### Testing
 
-    export MEGA_USER=<user_email>
-    export MEGA_PASSWD=<user_passwd>
+    export X_MEGA_USER=<user_email>
+    export X_MEGA_PASSWORD=<user_passwd>
+    export X_MEGA_USER_AGENT=HashcashDemo
     $ make test
     go test -v
     === RUN TestLogin

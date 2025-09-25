@@ -26,17 +26,19 @@ import (
 
 // Default settings
 const (
-	API_URL              = "https://g.api.mega.co.nz"
-	BASE_DOWNLOAD_URL    = "https://mega.co.nz"
-	RETRIES              = 10
-	DOWNLOAD_WORKERS     = 3
-	MAX_DOWNLOAD_WORKERS = 30
-	UPLOAD_WORKERS       = 1
-	MAX_UPLOAD_WORKERS   = 30
-	TIMEOUT              = time.Second * 10
-	HTTPSONLY            = false
-	minSleepTime         = 10 * time.Millisecond // for retries
-	maxSleepTime         = 5 * time.Second       // for retries
+	API_URL                    = "https://g.api.mega.co.nz"
+	BASE_DOWNLOAD_URL          = "https://mega.co.nz"
+	RETRIES                    = 10
+	DOWNLOAD_WORKERS           = 3
+	MAX_DOWNLOAD_WORKERS       = 30
+	UPLOAD_WORKERS             = 1
+	MAX_UPLOAD_WORKERS         = 30
+	TIMEOUT                    = time.Second * 10
+	HTTPSONLY                  = false
+	minSleepTime               = 10 * time.Millisecond // for retries
+	maxSleepTime               = 5 * time.Second       // for retries
+	X_MEGA_USER_AGENT          = ""                    // custom user agent string. Not set if empty
+	HASHCASH_CHALLENGE_TIMEOUT = time.Minute * 5       // time limit to solve hashcash challenge
 )
 
 type config struct {
@@ -50,7 +52,7 @@ type config struct {
 
 func newConfig() config {
 	return config{
-		baseurl:    API_URL,
+		baseurl:    getAPIBaseURL(),
 		retries:    RETRIES,
 		dl_workers: DOWNLOAD_WORKERS,
 		ul_workers: UPLOAD_WORKERS,
@@ -425,16 +427,76 @@ func (m *Mega) api_request(r []byte) (buf []byte, err error) {
 			m.debugf("Retry API request %d/%d: %v", i, m.retries, err)
 			backOffSleep(&sleepTime)
 		}
-		resp, err = m.client.Post(url, "application/json", bytes.NewBuffer(r))
+
+		// Create request
+		req, err := http.NewRequest("POST", url, bytes.NewBuffer(r))
 		if err != nil {
 			continue
 		}
+		addRequestHeaders(req)
+
+		// Send request
+		resp, err = m.client.Do(req)
+		if err != nil {
+			continue
+		}
+
+		// Handle 402 Payment Required status with hashcash challenge
+		if resp.StatusCode == 402 {
+			sleepTime = minSleepTime // reset exp backoff time
+			hashCashHeader := resp.Header.Get("X-Hashcash")
+			if hashCashHeader == "" {
+				_ = resp.Body.Close()
+				continue
+			}
+
+			// Parse hashcash header
+			easiness, token, valid := parseHashcash(hashCashHeader)
+			if !valid {
+				_ = resp.Body.Close()
+				continue
+			}
+
+			// Close the current response before making a new request
+			_ = resp.Body.Close()
+
+			// Generate hashcash response
+			cashValue, err := solveHashCashChallenge(token, easiness, HASHCASH_CHALLENGE_TIMEOUT, halfCPUCores())
+			if err != nil {
+				m.debugf("Failed to solve hashcash challenge: %v", err)
+				continue
+			}
+			if cashValue == "" {
+				m.debugf("Failed to solve hashcash challenge: empty cash value")
+				continue
+			}
+
+			// Create a new request with the hashcash header
+			req, err = http.NewRequest("POST", url, bytes.NewBuffer(r))
+			if err != nil {
+				continue
+			}
+			addHashCashRequestHeaders(req, token, cashValue)
+			// Send the new request
+			resp, err = m.client.Do(req)
+			if err != nil {
+				continue
+			}
+
+			// If still getting 402, give up this attempt and retry
+			if resp.StatusCode == 402 {
+				_ = resp.Body.Close()
+				continue
+			}
+		}
+
 		if resp.StatusCode != 200 {
 			// err must be not-nil on a continue
 			err = errors.New("Http Status: " + resp.Status)
 			_ = resp.Body.Close()
 			continue
 		}
+
 		buf, err = ioutil.ReadAll(resp.Body)
 		if err != nil {
 			_ = resp.Body.Close()
@@ -2081,4 +2143,30 @@ func (m *Mega) Link(n *Node, includeKey bool) (string, error) {
 	} else {
 		return fmt.Sprintf("%v/#!%v", BASE_DOWNLOAD_URL, id), nil
 	}
+}
+
+// addRequestHeaders adds standard headers to a request
+func addRequestHeaders(req *http.Request) {
+	userAgent := os.Getenv("X_MEGA_USER_AGENT")
+	if userAgent != "" || X_MEGA_USER_AGENT != "" {
+		req.Header.Set("User-Agent", userAgent)
+	}
+	req.Header.Set("Content-Type", "application/json")
+}
+
+// addHashCashRequestHeaders adds standard headers and hashcash headers to a request
+func addHashCashRequestHeaders(req *http.Request, token string, cashValue string) {
+	addRequestHeaders(req)
+	if token != "" && cashValue != "" {
+		req.Header.Set("X-Hashcash", fmt.Sprintf("1:%s:%s", token, cashValue))
+	}
+}
+
+// getAPIBaseURL returns the base URL for API requests
+func getAPIBaseURL() string {
+	url := os.Getenv("X_MEGA_API_URL")
+	if url == "" {
+		return API_URL
+	}
+	return url
 }
