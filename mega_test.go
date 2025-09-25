@@ -64,7 +64,12 @@ func createFile(t *testing.T, size int64) (string, string) {
 	if err != nil {
 		t.Fatalf("Error creating temp file: %v", err)
 	}
-	defer file.Close()
+	defer func() {
+		err := file.Close()
+		if err != nil {
+			t.Fatalf("Error closing temp file: %v", err)
+		}
+	}()
 	_, err = file.Write(b)
 	if err != nil {
 		t.Fatalf("Error writing temp file: %v", err)
@@ -110,7 +115,12 @@ func fileMD5(t *testing.T, name string) string {
 	if err != nil {
 		t.Fatalf("Failed to open %q: %v", name, err)
 	}
-	defer file.Close()
+	defer func() {
+		err := file.Close()
+		if err != nil {
+			t.Fatalf("Error closing temp file: %v", err)
+		}
+	}()
 	b, err := ioutil.ReadAll(file)
 	if err != nil {
 		t.Fatalf("Failed to read all %q: %v", name, err)
