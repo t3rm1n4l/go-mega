@@ -7,7 +7,7 @@ import (
 
 var (
 	// General errors
-	EINTERNAL  = errors.New("Internal error occured")
+	EINTERNAL  = errors.New("Internal error occurred")
 	EARGS      = errors.New("Invalid arguments")
 	EAGAIN     = errors.New("Try again")
 	ERATELIMIT = errors.New("Rate limit reached")

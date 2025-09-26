@@ -248,7 +248,7 @@ func TestDelete(t *testing.T) {
 
 	session.FS.mutex.Lock()
 	if _, ok := session.FS.lookup[node.hash]; ok {
-		t.Error("Expects file to be dissapeared")
+		t.Error("Expects file to be disappeared")
 	}
 	session.FS.mutex.Unlock()
 }

@@ -289,7 +289,7 @@ func (fs *MegaFS) GetChildren(n *Node) ([]*Node, error) {
 	return node.getChildren(), nil
 }
 
-// Retreive all the nodes in the given node tree path by name
+// Retrieve all the nodes in the given node tree path by name
 // This method returns array of nodes upto the matched subpath
 // (in same order as input names array) even if the target node is not located.
 func (fs *MegaFS) PathLookup(root *Node, ns []string) ([]*Node, error) {
@@ -421,7 +421,7 @@ func (m *Mega) api_request(r []byte) (buf []byte, err error) {
 		url = fmt.Sprintf("%s&sid=%s", url, m.sid)
 	}
 
-	sleepTime := minSleepTime // inital backoff time
+	sleepTime := minSleepTime // initial backoff time
 	for i := 0; i < m.retries+1; i++ {
 		if i != 0 {
 			m.debugf("Retry API request %d/%d: %v", i, m.retries, err)
@@ -1150,7 +1150,7 @@ func (d *Download) DownloadChunk(id int) (chunk []byte, err error) {
 
 	var resp *http.Response
 	chunk_url := fmt.Sprintf("%s/%d-%d", d.resourceUrl, chk_start, chk_start+int64(chk_size)-1)
-	sleepTime := minSleepTime // inital backoff time
+	sleepTime := minSleepTime // initial backoff time
 	for retry := 0; retry < d.m.retries+1; retry++ {
 		resp, err = d.m.client.Get(chunk_url)
 		if err == nil {
@@ -1499,7 +1499,7 @@ func (u *Upload) UploadChunk(id int, chunk []byte) (err error) {
 	ctr_aes.XORKeyStream(chunk, chunk)
 	chk_url := fmt.Sprintf("%s/%d", u.uploadUrl, chk_start)
 
-	sleepTime := minSleepTime // inital backoff time
+	sleepTime := minSleepTime // initial backoff time
 	for retry := 0; retry < u.m.retries+1; retry++ {
 		reader := bytes.NewBuffer(chunk)
 		req, err = http.NewRequest("POST", chk_url, reader)
@@ -1972,7 +1972,7 @@ func (m *Mega) processDeleteNode(evRaw []byte) error {
 func (m *Mega) pollEvents() {
 	var err error
 	var resp *http.Response
-	sleepTime := minSleepTime // inital backoff time
+	sleepTime := minSleepTime // initial backoff time
 	for {
 		if err != nil {
 			m.debugf("pollEvents: error from server", err)
