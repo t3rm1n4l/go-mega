@@ -6,13 +6,9 @@ test:
 
 # Get the build dependencies
 build_dep:
-	go get -u github.com/kisielk/errcheck
-	go get -u golang.org/x/tools/cmd/goimports
-	-#go get -u github.com/golang/lint/golint
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.5.0
 
 # Do source code quality checks
 check:
-	go vet
-	errcheck
-	goimports -d . | grep . ; test $$? -eq 1
-	-#golint
+	golangci-lint run
+	go vet ./...
