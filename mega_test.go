@@ -5,7 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -60,7 +60,7 @@ func createFile(t *testing.T, size int64) (string, string) {
 	if err != nil {
 		t.Fatalf("Error reading rand: %v", err)
 	}
-	file, err := ioutil.TempFile(os.TempDir(), "gomega-")
+	file, err := os.CreateTemp(os.TempDir(), "gomega-")
 	if err != nil {
 		t.Fatalf("Error creating temp file: %v", err)
 	}
@@ -121,7 +121,7 @@ func fileMD5(t *testing.T, name string) string {
 			t.Fatalf("Error closing temp file: %v", err)
 		}
 	}()
-	b, err := ioutil.ReadAll(file)
+	b, err := io.ReadAll(file)
 	if err != nil {
 		t.Fatalf("Failed to read all %q: %v", name, err)
 	}

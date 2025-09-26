@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"math/big"
 	mrand "math/rand"
@@ -496,7 +495,7 @@ func (m *Mega) api_request(r []byte) (buf []byte, err error) {
 			continue
 		}
 
-		buf, err = ioutil.ReadAll(resp.Body)
+		buf, err = io.ReadAll(resp.Body)
 		if err != nil {
 			_ = resp.Body.Close()
 			continue
@@ -1170,7 +1169,7 @@ func (d *Download) DownloadChunk(id int) (chunk []byte, err error) {
 		return nil, errors.New("retries exceeded")
 	}
 
-	chunk, err = ioutil.ReadAll(resp.Body)
+	chunk, err = io.ReadAll(resp.Body)
 	if err != nil {
 		_ = resp.Body.Close()
 		return nil, err
@@ -1524,7 +1523,7 @@ func (u *Upload) UploadChunk(id int, chunk []byte) (err error) {
 		return errors.New("retries exceeded")
 	}
 
-	chunk_resp, err := ioutil.ReadAll(rsp.Body)
+	chunk_resp, err := io.ReadAll(rsp.Body)
 	if err != nil {
 		_ = rsp.Body.Close()
 		return err
@@ -1995,7 +1994,7 @@ func (m *Mega) pollEvents() {
 			continue
 		}
 
-		buf, err := ioutil.ReadAll(resp.Body)
+		buf, err := io.ReadAll(resp.Body)
 		if err != nil {
 			m.logf("pollEvents: Error reading body: %v", err)
 			_ = resp.Body.Close()
