@@ -85,15 +85,6 @@ func base64urldecode(s string) ([]byte, error) {
 	return enc.DecodeString(s)
 }
 
-// base64_to_a32 converts base64 encoded byte slice b to uint32 slice.
-func base64_to_a32(s string) ([]uint32, error) {
-	d, err := base64urldecode(s)
-	if err != nil {
-		return nil, err
-	}
-	return bytes_to_a32(d)
-}
-
 // a32_to_base64 converts uint32 slice to base64 encoded byte slice.
 func a32_to_base64(a []uint32) (string, error) {
 	d, err := a32_to_bytes(a)
