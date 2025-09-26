@@ -80,8 +80,8 @@ func base64urldecode(s string) ([]byte, error) {
 	enc := base64.RawURLEncoding
 	// mega base64 decoder accepts the characters from both URLEncoding and StdEncoding
 	// though nearly all strings are URL encoded
-	s = strings.Replace(s, "+", "-", -1)
-	s = strings.Replace(s, "/", "_", -1)
+	s = strings.ReplaceAll(s, "+", "-")
+	s = strings.ReplaceAll(s, "/", "_")
 	return enc.DecodeString(s)
 }
 
