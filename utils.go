@@ -309,7 +309,6 @@ func getChunkSizes(size int64) (chunks []chunkSize) {
 var attrMatch = regexp.MustCompile(`{".*"}`)
 
 func decryptAttr(key []byte, data string) (attr FileAttr, err error) {
-	err = EBADATTR
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return attr, err
@@ -338,7 +337,6 @@ func decryptAttr(key []byte, data string) (attr FileAttr, err error) {
 }
 
 func encryptAttr(key []byte, attr FileAttr) (b string, err error) {
-	err = EBADATTR
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return "", err

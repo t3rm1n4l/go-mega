@@ -492,7 +492,6 @@ func (m *Mega) api_request(r []byte) (buf []byte, err error) {
 
 		if resp.StatusCode != 200 {
 			// err must be not-nil on a continue
-			err = errors.New("Http Status: " + resp.Status)
 			_ = resp.Body.Close()
 			continue
 		}
@@ -1500,7 +1499,6 @@ func (u *Upload) UploadChunk(id int, chunk []byte) (err error) {
 	ctr_aes.XORKeyStream(chunk, chunk)
 	chk_url := fmt.Sprintf("%s/%d", u.uploadUrl, chk_start)
 
-	chunk_resp := []byte{}
 	sleepTime := minSleepTime // inital backoff time
 	for retry := 0; retry < u.m.retries+1; retry++ {
 		reader := bytes.NewBuffer(chunk)
@@ -1526,7 +1524,7 @@ func (u *Upload) UploadChunk(id int, chunk []byte) (err error) {
 		return errors.New("retries exceeded")
 	}
 
-	chunk_resp, err = ioutil.ReadAll(rsp.Body)
+	chunk_resp, err := ioutil.ReadAll(rsp.Body)
 	if err != nil {
 		_ = rsp.Body.Close()
 		return err
