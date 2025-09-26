@@ -301,7 +301,7 @@ func (fs *MegaFS) PathLookup(root *Node, ns []string) ([]*Node, error) {
 	}
 
 	var err error
-	var found bool = true
+	var found = true
 
 	nodepath := []*Node{}
 
@@ -317,12 +317,12 @@ func (fs *MegaFS) PathLookup(root *Node, ns []string) ([]*Node, error) {
 			}
 		}
 
-		if found == false {
+		if !found {
 			break
 		}
 	}
 
-	if found == false {
+	if !found {
 		err = ENOENT
 	}
 
@@ -508,7 +508,7 @@ func (m *Mega) api_request(r []byte) (buf []byte, err error) {
 
 		// at this point the body is read and closed
 
-		if bytes.HasPrefix(buf, []byte("[")) == false && bytes.HasPrefix(buf, []byte("-")) == false {
+		if !bytes.HasPrefix(buf, []byte("[")) && !bytes.HasPrefix(buf, []byte("-")) {
 			return nil, EBADRESP
 		}
 
@@ -1246,7 +1246,7 @@ func (d *Download) Finish() (err error) {
 	if err != nil {
 		return err
 	}
-	if bytes.Equal(btmac, d.src.meta.mac) == false {
+	if !bytes.Equal(btmac, d.src.meta.mac) {
 		return EMACMISMATCH
 	}
 
@@ -1395,7 +1395,7 @@ func (m *Mega) NewUpload(parent *Node, name string, fileSize int64) (*Upload, er
 	}
 
 	ukey := []uint32{0, 0, 0, 0, 0, 0}
-	for i, _ := range ukey {
+	for i := range ukey {
 		ukey[i] = uint32(mrand.Int31())
 
 	}
@@ -1535,7 +1535,7 @@ func (u *Upload) UploadChunk(id int, chunk []byte) (err error) {
 		return err
 	}
 
-	if bytes.Equal(chunk_resp, nil) == false {
+	if !bytes.Equal(chunk_resp, nil) {
 		u.mutex.Lock()
 		u.completion_handle = chunk_resp
 		u.mutex.Unlock()
@@ -1814,7 +1814,7 @@ func (m *Mega) CreateDir(name string, parent *Node) (*Node, error) {
 	var res [1]UploadCompleteResp
 
 	compkey := []uint32{0, 0, 0, 0, 0, 0}
-	for i, _ := range compkey {
+	for i := range compkey {
 		compkey[i] = uint32(mrand.Int31())
 	}
 
@@ -1871,7 +1871,7 @@ func (m *Mega) Delete(node *Node, destroy bool) error {
 	if node == nil {
 		return EARGS
 	}
-	if destroy == false {
+	if !destroy {
 		return m.Move(node, m.FS.trash)
 	}
 

@@ -42,7 +42,7 @@ func bytes_to_a32(b []byte) ([]uint32, error) {
 	length := len(b) + 3
 	a := make([]uint32, length/4)
 	buf := bytes.NewBuffer(b)
-	for i, _ := range a {
+	for i := range a {
 		err := binary.Read(buf, binary.BigEndian, &a[i])
 		if err != nil {
 			return nil, err
