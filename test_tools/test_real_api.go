@@ -96,6 +96,17 @@ func main() {
 		}
 	}
 
+	// Test 5: Re-create client from session
+	fmt.Println("\n=== Test 5: Re-create client from session ===")
+	m2 := mega.New()
+	m2.LoginWithKeys(m.GetSessionID(), m.GetMasterKey())
+	user, err = m2.GetUser()
+	if err != nil {
+		log.Printf("GetUser failed: %v", err)
+	} else {
+		fmt.Printf("User info retrieved in %v: Email=%s\n", time.Since(start), user.Email)
+	}
+
 	fmt.Println("\n=== All tests completed ===")
 	fmt.Println("If you saw any [DEBUG] messages mentioning 'hashcash', the feature was triggered!")
 }
