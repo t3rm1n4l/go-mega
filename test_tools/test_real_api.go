@@ -13,6 +13,7 @@ func main() {
 	// Get credentials from environment variables or use defaults for testing
 	email := os.Getenv("X_MEGA_USER")
 	password := os.Getenv("X_MEGA_PASSWORD")
+	mfa := os.Getenv("X_MEGA_MFA")
 	fmt.Printf("Using email: %s\n", email)
 
 	// Create a new Mega client with debugging enabled
@@ -40,7 +41,7 @@ func main() {
 
 	// Set another breakpoint here to debug the login process
 	fmt.Println("DEBUG: About to call Login - set breakpoint here")
-	err := m.Login(email, password)
+	err := m.MultiFactorLogin(email, password, mfa)
 	if err != nil {
 		log.Fatalf("Login failed: %v", err)
 	}
