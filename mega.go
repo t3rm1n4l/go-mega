@@ -685,7 +685,7 @@ func (m *Mega) MultiFactorLogin(email, passwd, multiFactor string) error {
 	return m.postAuthInit()
 }
 
-// Finish initializing the Mega client after login or SetSession
+// Finish initializing the Mega client after Login*()
 func (m *Mega) postAuthInit() error {
 
 	waitEvent := m.WaitEventsStart()
