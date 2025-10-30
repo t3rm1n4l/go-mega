@@ -99,7 +99,11 @@ func main() {
 	// Test 5: Re-create client from session
 	fmt.Println("\n=== Test 5: Re-create client from session ===")
 	m2 := mega.New()
-	m2.LoginWithKeys(m.GetSessionID(), m.GetMasterKey())
+	err = m2.LoginWithKeys(m.GetSessionID(), m.GetMasterKey())
+	if err != nil {
+		log.Fatalf("LoginWithKeys failed: %v", err)
+	}
+
 	user, err = m2.GetUser()
 	if err != nil {
 		log.Printf("GetUser failed: %v", err)
