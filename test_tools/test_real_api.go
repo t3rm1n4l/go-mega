@@ -19,11 +19,11 @@ func main() {
 	m := mega.New()
 
 	// Enable debug logging to see the hashcash flow if it happens
-	m.SetDebugger(func(format string, v ...interface{}) {
+	m.SetDebugger(func(format string, v ...any) {
 		log.Printf("[DEBUG] "+format, v...)
 	})
 
-	m.SetLogger(func(format string, v ...interface{}) {
+	m.SetLogger(func(format string, v ...any) {
 		log.Printf("[INFO] "+format, v...)
 	})
 
