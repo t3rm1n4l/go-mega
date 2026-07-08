@@ -125,6 +125,7 @@ type DownloadResp struct {
 	Size uint64   `json:"s"`
 	Attr string   `json:"at"`
 	Err  ErrorMsg `json:"e"`
+	Fa   string   `json:"fa"`
 }
 
 type UploadMsg struct {
