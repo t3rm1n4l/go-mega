@@ -39,7 +39,7 @@ func retry(t *testing.T, what string, fn func() error) {
 
 func skipIfNoCredentials(t *testing.T) {
 	if USER == "" || PASSWORD == "" {
-		t.Skip("X_MEGA_USER and X_MEGA_PASSWD not set - skipping integration tests")
+		t.Skip("X_MEGA_USER and X_MEGA_PASSWORD not set - skipping integration tests")
 	}
 }
 
