@@ -41,12 +41,13 @@ const (
 )
 
 type config struct {
-	baseurl    string
-	retries    int
-	dl_workers int
-	ul_workers int
-	timeout    time.Duration
-	https      bool
+	baseurl     string
+	public_link MegaLink
+	retries     int
+	dl_workers  int
+	ul_workers  int
+	timeout     time.Duration
+	https       bool
 }
 
 func newConfig() config {
@@ -119,6 +120,8 @@ type Mega struct {
 	k []byte
 	// User handle
 	uh []byte
+	// Node ID
+	n string
 	// Filesystem object
 	FS *MegaFS
 	// HTTP Client
@@ -362,6 +365,24 @@ func New() *Mega {
 	return m
 }
 
+func NewWithLink(link string) (*Mega, error) {
+	parsedLink, err := parseLink(link)
+
+	if err != nil {
+		return nil, EARGS
+	}
+
+	m := New()
+	m.config.public_link = parsedLink
+
+	err = m.getLinkFileSystem(m.config.public_link)
+	if err != nil {
+		return nil, EARGS
+	}
+
+	return m, nil
+}
+
 // SetClient sets the HTTP client in use
 func (m *Mega) SetClient(client *http.Client) *Mega {
 	m.client = client
@@ -435,6 +456,10 @@ func (m *Mega) api_request(r []byte) (buf []byte, err error) {
 
 	if m.sid != "" {
 		url = fmt.Sprintf("%s&sid=%s", url, m.sid)
+	}
+
+	if m.n != "" {
+		url = fmt.Sprintf("%s&n=%s", url, m.n)
 	}
 
 	sleepTime := minSleepTime // initial backoff time
@@ -801,33 +826,44 @@ func (m *Mega) addFSNode(itm FSNode) (*Node, error) {
 
 	switch {
 	case itm.T == FOLDER || itm.T == FILE:
-		args := strings.Split(itm.Key, ":")
-		if len(args) < 2 {
-			return nil, fmt.Errorf("not enough : in item.Key: %q", itm.Key)
-		}
-		itemUser, itemKey := args[0], args[1]
-		itemKeyParts := strings.Split(itemKey, "/")
-		if len(itemKeyParts) >= 2 {
-			itemKey = itemKeyParts[0]
-			// the other part is maybe a share key handle?
+		itemUser, itemKey, err := buildItemKey(itm.Key)
+		if err != nil {
+			return node, err
 		}
 
 		switch {
 		// File or folder owned by current user
 		case itemUser == itm.User:
-			buf, err := base64urldecode(itemKey)
+			compkey, err = buildCompkey(itemKey, master_aes)
 			if err != nil {
 				return nil, err
 			}
-			err = blockDecrypt(master_aes, buf, buf)
+		// Root folder inside shared link
+		case itemUser == itm.Hash:
+			compkey, err = buildCompkey(itemKey, master_aes)
 			if err != nil {
 				return nil, err
 			}
-			compkey, err = bytes_to_a32(buf)
+		// Child item inside shared link
+		case itemUser == itm.Parent:
+			k, ok := m.FS.skmap[itemUser]
+			if !ok {
+				return nil, errors.New("couldn't find decryption key for shared file")
+			}
+			b, err := base64urldecode(k)
 			if err != nil {
 				return nil, err
 			}
-			// Shared folder
+			block, err := aes.NewCipher(b)
+			if err != nil {
+				return nil, err
+			}
+
+			compkey, err = buildCompkey(itemKey, block)
+			if err != nil {
+				return nil, err
+			}
+		// Shared folder
 		case itm.SUser != "" && itm.SKey != "":
 			sk, err := base64urldecode(itm.SKey)
 			if err != nil {
@@ -843,19 +879,11 @@ func (m *Mega) addFSNode(itm FSNode) (*Node, error) {
 			}
 
 			m.FS.skmap[itm.Hash] = itm.SKey
-			buf, err := base64urldecode(itemKey)
+			compkey, err = buildCompkey(itemKey, sk_aes)
 			if err != nil {
 				return nil, err
 			}
-			err = blockDecrypt(sk_aes, buf, buf)
-			if err != nil {
-				return nil, err
-			}
-			compkey, err = bytes_to_a32(buf)
-			if err != nil {
-				return nil, err
-			}
-			// Shared file
+		// Shared file
 		default:
 			k, ok := m.FS.skmap[itemUser]
 			if !ok {
@@ -873,15 +901,8 @@ func (m *Mega) addFSNode(itm FSNode) (*Node, error) {
 			if err != nil {
 				return nil, err
 			}
-			buf, err := base64urldecode(itemKey)
-			if err != nil {
-				return nil, err
-			}
-			err = blockDecrypt(block, buf, buf)
-			if err != nil {
-				return nil, err
-			}
-			compkey, err = bytes_to_a32(buf)
+
+			compkey, err = buildCompkey(itemKey, block)
 			if err != nil {
 				return nil, err
 			}
@@ -897,18 +918,17 @@ func (m *Mega) addFSNode(itm FSNode) (*Node, error) {
 		default:
 			key = compkey
 		}
+	}
 
-		bkey, err := a32_to_bytes(key)
-		if err != nil {
-			// FIXME:
-			attr.Name = "BAD ATTRIBUTE"
-		} else {
-			attr, err = decryptAttr(bkey, itm.Attr)
-			// FIXME:
-			if err != nil {
-				attr.Name = "BAD ATTRIBUTE"
-			}
-		}
+	bkey, err := a32_to_bytes(key)
+	if err != nil {
+		return nil, err
+	}
+
+	attr, err = decryptAttr(bkey, itm.Attr)
+	// FIXME:
+	if err != nil {
+		attr.Name = "BAD ATTRIBUTE"
 	}
 
 	n, ok := m.FS.lookup[itm.Hash]
@@ -946,35 +966,15 @@ func (m *Mega) addFSNode(itm FSNode) (*Node, error) {
 
 	switch {
 	case itm.T == FILE:
-		var meta NodeMeta
-		meta.key, err = a32_to_bytes(key)
+		node.meta, err = buildMeta(itm.T, bkey, compkey)
 		if err != nil {
-			return nil, err
+			return node, err
 		}
-		meta.iv, err = a32_to_bytes([]uint32{compkey[4], compkey[5], 0, 0})
-		if err != nil {
-			return nil, err
-		}
-		meta.mac, err = a32_to_bytes([]uint32{compkey[6], compkey[7]})
-		if err != nil {
-			return nil, err
-		}
-		meta.compkey, err = a32_to_bytes(compkey)
-		if err != nil {
-			return nil, err
-		}
-		node.meta = meta
 	case itm.T == FOLDER:
-		var meta NodeMeta
-		meta.key, err = a32_to_bytes(key)
+		node.meta, err = buildMeta(itm.T, bkey, compkey)
 		if err != nil {
-			return nil, err
+			return node, err
 		}
-		meta.compkey, err = a32_to_bytes(compkey)
-		if err != nil {
-			return nil, err
-		}
-		node.meta = meta
 	case itm.T == ROOT:
 		attr.Name = "Cloud Drive"
 		m.FS.root = node
@@ -997,6 +997,62 @@ func (m *Mega) addFSNode(itm FSNode) (*Node, error) {
 	node.ntype = itm.T
 
 	return node, nil
+}
+
+func buildMeta(itm int, bkey []byte, compkey []uint32) (NodeMeta, error) {
+	var meta NodeMeta
+	var err error
+
+	meta.key = bkey
+
+	meta.compkey, err = a32_to_bytes(compkey)
+	if err != nil {
+		return meta, err
+	}
+
+	switch {
+	case itm == FILE:
+		meta.iv, err = a32_to_bytes([]uint32{compkey[4], compkey[5], 0, 0})
+		if err != nil {
+			return meta, err
+		}
+		meta.mac, err = a32_to_bytes([]uint32{compkey[6], compkey[7]})
+		if err != nil {
+			return meta, err
+		}
+	case itm == FOLDER:
+	default:
+		return meta, errors.New("Unsupported node type")
+	}
+
+	return meta, nil
+}
+
+func buildCompkey(itemKey string, blk cipher.Block) ([]uint32, error) {
+	buf, err := base64urldecode(itemKey)
+	if err != nil {
+		return nil, err
+	}
+	err = blockDecrypt(blk, buf, buf)
+	if err != nil {
+		return nil, err
+	}
+	return bytes_to_a32(buf)
+}
+
+func buildItemKey(key string) (itemUser string, itemKey string, error error) {
+	args := strings.Split(key, ":")
+	if len(args) < 2 {
+		return "", "", fmt.Errorf("not enough : in item.Key: %q", key)
+	}
+	itemUser, itemKey = args[0], args[1]
+	itemKeyParts := strings.Split(itemKey, "/")
+	if len(itemKeyParts) >= 2 {
+		itemKey = itemKeyParts[0]
+		// the other part is maybe a share key handle?
+	}
+
+	return itemUser, itemKey, nil
 }
 
 // Get all nodes from filesystem
@@ -1284,6 +1340,101 @@ func (m *Mega) DownloadFile(src *Node, dstpath string, progress *chan int) error
 	}()
 
 	d, err := m.NewDownload(src)
+	if err != nil {
+		return err
+	}
+
+	_, err = os.Stat(dstpath)
+	if os.IsExist(err) {
+		err = os.Remove(dstpath)
+		if err != nil {
+			return err
+		}
+	}
+
+	outfile, err := os.OpenFile(dstpath, os.O_RDWR|os.O_CREATE, 0600)
+	if err != nil {
+		return err
+	}
+
+	workch := make(chan int)
+	errch := make(chan error, m.dl_workers)
+	wg := sync.WaitGroup{}
+
+	// Fire chunk download workers
+	for w := 0; w < m.dl_workers; w++ {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			// Wait for work blocked on channel
+			for id := range workch {
+				chunk, err := d.DownloadChunk(id)
+				if err != nil {
+					errch <- err
+					return
+				}
+
+				chk_start, _, err := d.ChunkLocation(id)
+				if err != nil {
+					errch <- err
+					return
+				}
+
+				_, err = outfile.WriteAt(chunk, chk_start)
+				if err != nil {
+					errch <- err
+					return
+				}
+
+				if progress != nil {
+					*progress <- len(chunk)
+				}
+			}
+		}()
+	}
+
+	// Place chunk download jobs to chan
+	err = nil
+	for id := 0; id < d.Chunks() && err == nil; {
+		select {
+		case workch <- id:
+			id++
+		case err = <-errch:
+		}
+	}
+	close(workch)
+
+	wg.Wait()
+
+	closeErr := outfile.Close()
+	if err != nil {
+		_ = os.Remove(dstpath)
+		return err
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+
+	return d.Finish()
+}
+
+func (m *Mega) DownloadLink(link string, dstpath string, progress *chan int) error {
+	defer func() {
+		if progress != nil {
+			close(*progress)
+		}
+	}()
+
+	parsedLink, err := parseLink(link)
+
+	if err != nil {
+		return EARGS
+	}
+
+	d, err := m.NewLinkDownload(parsedLink)
+
 	if err != nil {
 		return err
 	}

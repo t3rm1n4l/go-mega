@@ -39,7 +39,7 @@ func retry(t *testing.T, what string, fn func() error) {
 
 func skipIfNoCredentials(t *testing.T) {
 	if USER == "" || PASSWORD == "" {
-		t.Skip("X_MEGA_USER and X_MEGA_PASSWD not set - skipping integration tests")
+		t.Skip("X_MEGA_USER and X_MEGA_PASSWORD not set - skipping integration tests")
 	}
 }
 
@@ -441,4 +441,45 @@ func TestWaitEvents(t *testing.T) {
 	}
 	// Check nothing happens if we fire the event with no listeners
 	m.waitEventsFire()
+}
+
+func TestLinkDownload(t *testing.T) {
+	m := initSession(t)
+	l := `https://mega.nz/file/iiiiiiii#kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk`
+
+	dir, err := os.MkdirTemp("", "gomega-")
+	if err != nil {
+		t.Fatalf("Error creating temp directory: %v", err)
+	}
+
+	err = m.DownloadLink(l, dir+"/file", nil)
+	if err != nil {
+		t.Fatal("Download failed: ", err)
+	}
+}
+
+func TestLinkDownloadWithoutSession(t *testing.T) {
+	m := New()
+	l := `https://mega.nz/file/iiiiiiii#kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk`
+
+	dir, err := os.MkdirTemp("", "gomega-")
+	if err != nil {
+		t.Fatalf("Error creating temp directory: %v", err)
+	}
+
+	err = m.DownloadLink(l, dir+"/file", nil)
+	if err != nil {
+		t.Fatal("Download failed: ", err)
+	}
+}
+
+func TestFolderLinkGetFilesystem(t *testing.T) {
+	m, err := NewWithLink(`https://mega.nz/folder/iiiiiiii#kkkkkkkkkkkkkkkkkkkkkk`)
+	if err != nil {
+		t.Fatal("Unable to create link session: ", err)
+	}
+
+	for _, node := range m.FS.lookup {
+		fmt.Println(node.ntype, node.ts, "/"+node.name, node.size, node.hash)
+	}
 }
