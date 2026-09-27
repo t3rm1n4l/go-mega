@@ -105,6 +105,11 @@ type FilesResp struct {
 
 type FileAttr struct {
 	Name string `json:"n"`
+	// Fingerprint is MEGA's "c" node attribute: base64 of 4 big-endian
+	// CRC32 words followed by a serialized modification time. It is
+	// produced/consumed by official MEGA clients as well as this
+	// library; see (de)serializeFingerprint in utils.go. Empty if unset.
+	Fingerprint string `json:"c,omitempty"`
 }
 
 type GetLinkMsg struct {

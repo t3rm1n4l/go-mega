@@ -145,15 +145,17 @@ const (
 
 // Filesystem node
 type Node struct {
-	fs       *MegaFS
-	name     string
-	hash     string
-	parent   *Node
-	children []*Node
-	ntype    int
-	size     int64
-	ts       time.Time
-	meta     NodeMeta
+	fs          *MegaFS
+	name        string
+	hash        string
+	parent      *Node
+	children    []*Node
+	ntype       int
+	size        int64
+	ts          time.Time
+	meta        NodeMeta
+	mtime       time.Time // last modification time, if known (see GetModificationTime)
+	fingerprint string    // raw, still-encoded "c" node attribute (CRC32s + mtime), if any
 }
 
 func (n *Node) removeChild(c *Node) bool {
@@ -200,6 +202,17 @@ func (n *Node) GetTimeStamp() time.Time {
 	n.fs.mutex.Lock()
 	defer n.fs.mutex.Unlock()
 	return n.ts
+}
+
+// GetModificationTime returns the file's last modification time, as stored
+// in MEGA's "c" (fingerprint) node attribute by this library or by an
+// official MEGA client. It returns the zero Value if the node has no
+// fingerprint attribute, or if it could not be parsed - callers should fall
+// back to GetTimeStamp (the node's creation/upload time) in that case.
+func (n *Node) GetModificationTime() time.Time {
+	n.fs.mutex.Lock()
+	defer n.fs.mutex.Unlock()
+	return n.mtime
 }
 
 func (n *Node) GetName() string {
@@ -1000,6 +1013,7 @@ func (m *Mega) addFSNode(itm FSNode) (*Node, error) {
 	node.hash = itm.Hash
 	node.parent = parent
 	node.ntype = itm.T
+	node.fingerprint, node.mtime = deserializeFingerprint(attr.Fingerprint)
 
 	return node, nil
 }
@@ -1384,6 +1398,8 @@ type Upload struct {
 	mutex             sync.Mutex // to protect the following
 	chunks            []chunkSize
 	chunk_macs        [][]byte
+	fingerprint       *fingerprintAccumulator // accumulates the "c" attribute from chunk plaintext, see utils.go
+	mtime             int64                   // unix mtime to store, set via SetModTime; 0 means "not set"
 	completion_handle []byte
 }
 
@@ -1473,8 +1489,23 @@ func (m *Mega) NewUpload(parent *Node, name string, fileSize int64) (*Upload, er
 		chunks:            chunks,
 		chunk_macs:        make([][]byte, len(chunks)),
 		completion_handle: []byte{},
+		fingerprint:       newFingerprintAccumulator(fileSize),
 	}
 	return u, nil
+}
+
+// SetModTime records the modification time to store on the file once the
+// upload completes (in MEGA's "c" node attribute, alongside a quick CRC32
+// fingerprint of the content, in the same format used by official MEGA
+// clients). It is optional: if never called, Finish behaves exactly as
+// before and no fingerprint/mtime is stored.
+//
+// It must be called before Finish, and may be called at any point before
+// then (including before any UploadChunk call).
+func (u *Upload) SetModTime(t time.Time) {
+	u.mutex.Lock()
+	defer u.mutex.Unlock()
+	u.mtime = t.Unix()
 }
 
 // Chunks returns The number of chunks in the upload.
@@ -1499,6 +1530,18 @@ func (u *Upload) UploadChunk(id int, chunk []byte) (err error) {
 	if len(chunk) != chk_size {
 		return errors.New("upload chunk is wrong size")
 	}
+
+	// Capture the plaintext for the CRC32 fingerprint before it is
+	// encrypted in place below. This works from the chunk stream alone -
+	// no seeking or re-reading of the original source is required, so it
+	// works equally well whether the caller's data comes from a local
+	// file, another remote, or any other io.Reader.
+	if u.fingerprint != nil {
+		u.mutex.Lock()
+		u.fingerprint.Write(chk_start, chunk)
+		u.mutex.Unlock()
+	}
+
 	ctr_iv, err := bytes_to_a32(u.kiv)
 	if err != nil {
 		return err
@@ -1592,7 +1635,10 @@ func (u *Upload) Finish() (node *Node, err error) {
 	}
 	meta_mac := []uint32{t[0] ^ t[1], t[2] ^ t[3]}
 
-	attr := FileAttr{u.name}
+	attr := FileAttr{Name: u.name}
+	if u.mtime != 0 {
+		attr.Fingerprint = serializeFingerprint(u.fingerprint.Finish(), u.mtime)
+	}
 
 	attr_data, err := encryptAttr(u.kbytes, attr)
 	if err != nil {
@@ -1679,6 +1725,9 @@ func (m *Mega) UploadFile(srcpath string, parent *Node, name string, progress *c
 	u, err := m.NewUpload(parent, name, fileSize)
 	if err != nil {
 		return nil, err
+	}
+	if info != nil {
+		u.SetModTime(info.ModTime())
 	}
 
 	workch := make(chan int)
@@ -1795,7 +1844,7 @@ func (m *Mega) Rename(src *Node, name string) error {
 	if err != nil {
 		return err
 	}
-	attr := FileAttr{name}
+	attr := FileAttr{Name: name, Fingerprint: src.fingerprint}
 	attr_data, err := encryptAttr(src.meta.key, attr)
 	if err != nil {
 		return err
@@ -1849,7 +1898,7 @@ func (m *Mega) CreateDir(name string, parent *Node) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	attr := FileAttr{name}
+	attr := FileAttr{Name: name}
 	ukey, err := a32_to_bytes(compkey[:4])
 	if err != nil {
 		return nil, err
@@ -1969,6 +2018,7 @@ func (m *Mega) processUpdateNode(evRaw []byte) error {
 	attr, err := decryptAttr(node.meta.key, ev.Attr)
 	if err == nil {
 		node.name = attr.Name
+		node.fingerprint, node.mtime = deserializeFingerprint(attr.Fingerprint)
 	} else {
 		node.name = "BAD ATTRIBUTE"
 	}
