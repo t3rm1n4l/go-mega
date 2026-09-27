@@ -9,12 +9,14 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"hash/crc32"
 	"math/big"
 	"net"
 	"net/http"
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -373,4 +375,272 @@ func halfCPUCores() int {
 		return 1
 	}
 	return n
+}
+
+// --- MEGA file fingerprint ("c" node attribute) ---
+//
+// Official MEGA clients store a "quick fingerprint" on every file, in the
+// node's "c" attribute: 4 big-endian CRC32 words (16 bytes) computed over a
+// handful of sampled regions of the file, immediately followed by a
+// variable-length serialized last-modification time. This is documented
+// (informally) by other MEGA client implementations, e.g.:
+//   - https://github.com/meganz/sdk/blob/master/src/filefingerprint.cpp
+//   - https://github.com/gpailler/MegaApiClient/blob/master/MegaApiClient/Serialization/Attributes.cs
+//
+// The functions below (de)serialize this attribute, and fingerprintAccumulator
+// computes the CRC32 words incrementally from the plaintext chunk stream
+// that Upload.UploadChunk already sees - without ever seeking or re-reading
+// the original source. This means it works for any source (a local file, a
+// crypt-wrapped remote, another cloud remote, stdin, ...), unlike an
+// implementation based on re-opening a local path.
+
+const (
+	maxFull        = 8192 // files up to this size are read in full
+	crcArrayLength = 4    // number of CRC32 words in a fingerprint
+	crcSize        = 4 * crcArrayLength
+	fpMaxLen       = crcSize + 1 + 8 // crc words + 1 length byte + up to 8 mtime bytes
+)
+
+// serializeFingerprint builds the base64-encoded "c" attribute value from 4
+// CRC32 words and a unix modification time.
+func serializeFingerprint(crc []uint32, mtime int64) string {
+	buf := make([]byte, crcSize)
+	for i := 0; i < crcArrayLength && i < len(crc); i++ {
+		binary.BigEndian.PutUint32(buf[i*4:], crc[i])
+	}
+	dateBytes := serializeInt64(mtime)
+	out := make([]byte, 0, fpMaxLen)
+	out = append(out, buf...)
+	out = append(out, dateBytes...)
+	return base64.StdEncoding.EncodeToString(out)
+}
+
+// deserializeFingerprint parses a "c" attribute value, returning the raw
+// (still-encoded) fingerprint string unchanged - so it can be round-tripped
+// through Rename without altering it - and the modification time it
+// encodes, if any. If fp is empty or malformed, it returns ("", zero Time),
+// and callers should fall back to the node's ordinary timestamp.
+func deserializeFingerprint(fp string) (raw string, mtime time.Time) {
+	if fp == "" {
+		return "", time.Time{}
+	}
+	data, err := base64.StdEncoding.DecodeString(fp)
+	if err != nil || len(data) < crcSize+1 {
+		return fp, time.Time{}
+	}
+	t, err := deserializeInt64(data[crcSize:])
+	if err != nil {
+		return fp, time.Time{}
+	}
+	return fp, time.Unix(t, 0)
+}
+
+// serializeInt64 encodes val as [length byte][value bytes, little-endian],
+// using the minimum number of bytes. This is the format MEGA uses to pack
+// a modification time after the CRC32 words in the "c" attribute.
+func serializeInt64(val int64) []byte {
+	out := make([]byte, 9) // 1 length byte + up to 8 value bytes
+	n := 0
+	for val != 0 {
+		n++
+		out[n] = byte(val & 0xFF)
+		val >>= 8
+	}
+	out[0] = byte(n)
+	return out[:n+1]
+}
+
+// deserializeInt64 is the inverse of serializeInt64.
+func deserializeInt64(val []byte) (int64, error) {
+	if len(val) == 0 {
+		return 0, errors.New("mega: empty mtime attribute")
+	}
+	n := int(val[0])
+	if n > 8 || n >= len(val) {
+		return 0, errors.New("mega: invalid mtime attribute")
+	}
+	var result int64
+	for i := n; i > 0; i-- {
+		result = (result << 8) | int64(val[i])
+	}
+	return result, nil
+}
+
+// window describes one fixed-size sample window that must be CRC32-folded
+// into a particular group (0..crcArrayLength-1), at a fixed absolute file
+// offset. Only used for files bigger than maxFull.
+type window struct {
+	offset int64
+	length int
+	group  int
+}
+
+// computeSampleWindows returns every byte range that MEGA's "large file"
+// fingerprint algorithm samples. Because fileSize is known upfront (rclone
+// and go-mega both know the size before uploading starts), this can be
+// precomputed once instead of requiring random access into the file's
+// content while uploading.
+func computeSampleWindows(fileSize int64) []window {
+	blockLen := 4 * crcSize
+	blocksPerGroup := maxFull / (blockLen * crcArrayLength)
+	windows := make([]window, 0, crcArrayLength*blocksPerGroup)
+	for g := 0; g < crcArrayLength; g++ {
+		for i := 0; i < blocksPerGroup; i++ {
+			combined := g*blocksPerGroup + i
+			offset := (fileSize - int64(blockLen)) * int64(combined) / int64(crcArrayLength*blocksPerGroup-1)
+			windows = append(windows, window{offset: offset, length: blockLen, group: g})
+		}
+	}
+	return windows
+}
+
+// fingerprintAccumulator computes MEGA's "quick fingerprint" CRC32 words
+// incrementally, fed by the plaintext bytes of each upload chunk as it is
+// sent (see Upload.UploadChunk). It never seeks or re-reads the source, so
+// it works for any source (a local file, a crypt-wrapped remote, another
+// cloud remote, stdin, ...). Chunks may be delivered in any order and, since
+// Upload supports uploading with multiple concurrent workers, may even
+// arrive concurrently: each sample window is a fixed, small (<=64 byte)
+// buffer addressed by absolute file offset, so out-of-order or concurrent
+// delivery still reconstructs every window correctly as long as each byte
+// of the file is written exactly once (which UploadChunk's chunking already
+// guarantees). Write is safe for concurrent use.
+type fingerprintAccumulator struct {
+	mutex sync.Mutex
+
+	mode int // 0 = tiny (fileSize<=crcSize), 1 = small (fileSize<=maxFull), 2 = large
+
+	buf []byte // tiny/small mode: whole file content, buffered (at most maxFull bytes)
+
+	windows  []window // large mode only
+	winBuf   [][]byte // large mode only: one fixed-size buffer per window
+	winSeen  []int    // large mode only: bytes written so far into each window
+	groupCRC [crcArrayLength]uint32
+}
+
+func newFingerprintAccumulator(fileSize int64) *fingerprintAccumulator {
+	fa := &fingerprintAccumulator{}
+	switch {
+	case fileSize <= crcSize:
+		fa.mode = 0
+		fa.buf = make([]byte, crcSize) // zero-padded if the file is shorter
+	case fileSize <= maxFull:
+		fa.mode = 1
+		fa.buf = make([]byte, fileSize)
+	default:
+		fa.mode = 2
+		fa.windows = computeSampleWindows(fileSize)
+		fa.winBuf = make([][]byte, len(fa.windows))
+		fa.winSeen = make([]int, len(fa.windows))
+		for i, w := range fa.windows {
+			fa.winBuf[i] = make([]byte, w.length)
+		}
+	}
+	return fa
+}
+
+// Write feeds fileOffset..fileOffset+len(data) of plaintext file content
+// into the accumulator. data is a contiguous, non-overlapping slice of the
+// file; different Write calls (i.e. different upload chunks) may arrive in
+// any order, and even concurrently.
+func (fa *fingerprintAccumulator) Write(fileOffset int64, data []byte) {
+	if fa == nil || len(data) == 0 {
+		return
+	}
+	fa.mutex.Lock()
+	defer fa.mutex.Unlock()
+
+	switch fa.mode {
+	case 0, 1:
+		end := fileOffset + int64(len(data))
+		if end > int64(len(fa.buf)) {
+			end = int64(len(fa.buf))
+		}
+		if end <= fileOffset {
+			return
+		}
+		copy(fa.buf[fileOffset:end], data[:end-fileOffset])
+	default:
+		fa.writeLarge(fileOffset, data)
+	}
+}
+
+func (fa *fingerprintAccumulator) writeLarge(fileOffset int64, data []byte) {
+	// Only bookkeeping happens here: copy whichever bytes of this piece
+	// belong to a not-yet-complete window into that window's buffer.
+	// crc32.Update is deliberately NOT called here: a crc32.Update chain
+	// is order-dependent (it computes the CRC of a concatenation, not an
+	// order-independent combination), so folding a window in as soon as
+	// it happens to complete would make the result depend on chunk
+	// upload/arrival order - which, since Upload supports multiple
+	// concurrent workers (see UploadFile), is not guaranteed. Instead
+	// every window is folded into its group's CRC in one fixed pass, in
+	// Finish, below.
+	chunkStart := fileOffset
+	chunkEnd := fileOffset + int64(len(data))
+	for i, w := range fa.windows {
+		if fa.winSeen[i] >= w.length {
+			continue // already complete
+		}
+		wStart, wEnd := w.offset, w.offset+int64(w.length)
+		start := wStart
+		if start < chunkStart {
+			start = chunkStart
+		}
+		end := wEnd
+		if end > chunkEnd {
+			end = chunkEnd
+		}
+		if end <= start {
+			continue // no overlap with this chunk
+		}
+		copy(fa.winBuf[i][start-wStart:end-wStart], data[start-chunkStart:end-chunkStart])
+		fa.winSeen[i] += int(end - start)
+	}
+}
+
+// Finish returns the 4 CRC32 fingerprint words. Any window that never
+// received its full content (should only happen if UploadChunk was never
+// called for part of the file) is folded in as-is (zero-padded).
+func (fa *fingerprintAccumulator) Finish() []uint32 {
+	fa.mutex.Lock()
+	defer fa.mutex.Unlock()
+
+	crc := make([]uint32, crcArrayLength)
+	switch fa.mode {
+	case 0:
+		for i := 0; i < crcArrayLength; i++ {
+			crc[i] = binary.BigEndian.Uint32(fa.buf[i*4:])
+		}
+	case 1:
+		fileSize := int64(len(fa.buf))
+		for i := 0; i < crcArrayLength; i++ {
+			begin := int64(i) * fileSize / crcArrayLength
+			end := (int64(i) + 1) * fileSize / crcArrayLength
+			crc[i] = htonl(crc32.ChecksumIEEE(fa.buf[begin:end]))
+		}
+	default:
+		// Fold every window into its group's CRC in the fixed canonical
+		// order (fa.windows is laid out group-by-group, each group's
+		// windows in ascending sample order - see computeSampleWindows),
+		// regardless of the order in which windows actually became
+		// complete while uploading.
+		for i, w := range fa.windows {
+			fa.groupCRC[w.group] = crc32.Update(fa.groupCRC[w.group], crc32.IEEETable, fa.winBuf[i])
+		}
+		for i := 0; i < crcArrayLength; i++ {
+			crc[i] = htonl(fa.groupCRC[i])
+		}
+	}
+	return crc
+}
+
+// htonl mirrors the (host-endianness-dependent) byte order used by the
+// reference implementations linked above, so that fingerprints produced by
+// this library match those produced by official MEGA clients on the same
+// (near-universally little-endian) platforms.
+func htonl(val uint32) uint32 {
+	tmp := make([]byte, 4)
+	binary.NativeEndian.PutUint32(tmp, val)
+	return binary.BigEndian.Uint32(tmp)
 }
