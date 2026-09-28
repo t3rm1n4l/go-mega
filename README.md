@@ -17,6 +17,7 @@ This is an API client library for MEGA storage service. Currently, the library s
   - Move file or directory
   - Rename file or directory
   - Delete file or directory
+  - Set modification time of a file (at upload time and later)
   - Parallel split download and upload
   - Filesystem events auto sync
   - Unit tests

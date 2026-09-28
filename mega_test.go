@@ -262,6 +262,70 @@ func TestDelete(t *testing.T) {
 	session.FS.mutex.Unlock()
 }
 
+// TestModificationTime checks that the modification time of the source
+// file is stored in the fingerprint attribute of the uploaded node,
+// that it survives a rename and that it can be changed later with
+// SetModificationTime.
+func TestModificationTime(t *testing.T) {
+	session := initSession(t)
+
+	name, _ := createFile(t, 314573)
+	defer func() {
+		_ = os.Remove(name)
+	}()
+
+	mtime := time.Unix(1600000000, 0)
+	err := os.Chtimes(name, mtime, mtime)
+	if err != nil {
+		t.Fatal("Failed to set file modification time", err)
+	}
+
+	var node *Node
+	retry(t, "Upload with modification time", func() error {
+		node, err = session.UploadFile(name, session.FS.root, "", nil)
+		return err
+	})
+
+	if got := node.GetModificationTime(); !got.Equal(mtime) {
+		t.Errorf("Modification time mismatch after upload: want %v, got %v", mtime, got)
+	}
+
+	retry(t, "Rename", func() error {
+		return session.Rename(node, "newname.txt")
+	})
+	if got := node.GetModificationTime(); !got.Equal(mtime) {
+		t.Errorf("Modification time not preserved after rename: want %v, got %v", mtime, got)
+	}
+
+	newMtime := time.Unix(1700000000, 0)
+	retry(t, "SetModificationTime", func() error {
+		return session.SetModificationTime(node, newMtime)
+	})
+	if got := node.GetModificationTime(); !got.Equal(newMtime) {
+		t.Errorf("Modification time mismatch after update: want %v, got %v", newMtime, got)
+	}
+
+	// Verify in a fresh session that the modification time is
+	// persisted on the server
+	fresh := New()
+	retry(t, "Login", func() error {
+		return fresh.Login(USER, PASSWORD)
+	})
+	hash := node.GetHash()
+	fresh.FS.mutex.Lock()
+	n := fresh.FS.lookup[hash]
+	fresh.FS.mutex.Unlock()
+	if n == nil {
+		t.Fatal("Uploaded node not found in fresh session")
+	}
+	if got := n.GetModificationTime(); !got.Equal(newMtime) {
+		t.Errorf("Modification time mismatch in fresh session: want %v, got %v", newMtime, got)
+	}
+	retry(t, "Delete", func() error {
+		return session.Delete(node, true)
+	})
+}
+
 func TestCreateDir(t *testing.T) {
 	session := initSession(t)
 	node := createDir(t, session, "testdir1", session.FS.root)

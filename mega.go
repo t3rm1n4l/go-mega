@@ -153,6 +153,7 @@ type Node struct {
 	ntype    int
 	size     int64
 	ts       time.Time
+	mtime    time.Time
 	meta     NodeMeta
 }
 
@@ -202,6 +203,16 @@ func (n *Node) GetTimeStamp() time.Time {
 	return n.ts
 }
 
+// GetModificationTime returns the modification time of the node as
+// stored in its fingerprint attribute, or the zero time.Time if the
+// node does not carry one (for example because it was uploaded by an
+// application that does not set it).
+func (n *Node) GetModificationTime() time.Time {
+	n.fs.mutex.Lock()
+	defer n.fs.mutex.Unlock()
+	return n.mtime
+}
+
 func (n *Node) GetName() string {
 	n.fs.mutex.Lock()
 	defer n.fs.mutex.Unlock()
@@ -219,6 +230,8 @@ type NodeMeta struct {
 	compkey []byte
 	iv      []byte
 	mac     []byte
+	// attrstring holds the raw encrypted attribute string of the node
+	attrstring string
 }
 
 // Mega filesystem object
@@ -952,6 +965,7 @@ func (m *Mega) addFSNode(itm FSNode) (*Node, error) {
 	switch {
 	case itm.T == FILE:
 		var meta NodeMeta
+		meta.attrstring = itm.Attr
 		meta.key, err = a32_to_bytes(key)
 		if err != nil {
 			return nil, err
@@ -971,6 +985,7 @@ func (m *Mega) addFSNode(itm FSNode) (*Node, error) {
 		node.meta = meta
 	case itm.T == FOLDER:
 		var meta NodeMeta
+		meta.attrstring = itm.Attr
 		meta.key, err = a32_to_bytes(key)
 		if err != nil {
 			return nil, err
@@ -1000,8 +1015,23 @@ func (m *Mega) addFSNode(itm FSNode) (*Node, error) {
 	node.hash = itm.Hash
 	node.parent = parent
 	node.ntype = itm.T
+	node.mtime = parseModificationTime(attr.C)
 
 	return node, nil
+}
+
+// parseModificationTime extracts the modification time from the value
+// of a node fingerprint attribute ("c"). It returns the zero
+// time.Time if the fingerprint is missing or invalid.
+func parseModificationTime(fingerprint string) time.Time {
+	if fingerprint == "" {
+		return time.Time{}
+	}
+	_, mtime, err := unserializeFingerprint(fingerprint)
+	if err != nil {
+		return time.Time{}
+	}
+	return time.Unix(int64(mtime), 0)
 }
 
 // Get all nodes from filesystem
@@ -1381,6 +1411,8 @@ type Upload struct {
 	mac_enc           cipher.BlockMode
 	kbytes            []byte
 	ukey              []uint32
+	mtime             time.Time
+	fp                *fingerprintCRC
 	mutex             sync.Mutex // to protect the following
 	chunks            []chunkSize
 	chunk_macs        [][]byte
@@ -1470,11 +1502,22 @@ func (m *Mega) NewUpload(parent *Node, name string, fileSize int64) (*Upload, er
 		mac_enc:           mac_enc,
 		kbytes:            kbytes,
 		ukey:              ukey,
+		mtime:             time.Time{},
+		fp:                newFingerprintCRC(fileSize),
 		chunks:            chunks,
 		chunk_macs:        make([][]byte, len(chunks)),
 		completion_handle: []byte{},
 	}
 	return u, nil
+}
+
+// SetModificationTime sets the modification time that is stored in
+// the fingerprint attribute of the file node when the upload is
+// finalized with Finish. It must be called before Finish.
+func (u *Upload) SetModificationTime(t time.Time) {
+	u.mutex.Lock()
+	defer u.mutex.Unlock()
+	u.mtime = t
 }
 
 // Chunks returns The number of chunks in the upload.
@@ -1523,6 +1566,13 @@ func (u *Upload) UploadChunk(id int, chunk []byte) (err error) {
 
 	var rsp *http.Response
 	var req *http.Request
+
+	// Collect the byte ranges needed for the fingerprint CRC from
+	// the plaintext chunk before it is encrypted.
+	u.mutex.Lock()
+	u.fp.write(int64(chk_start), chunk)
+	u.mutex.Unlock()
+
 	ctr_aes.XORKeyStream(chunk, chunk)
 	chk_url := fmt.Sprintf("%s/%d", u.uploadUrl, chk_start)
 
@@ -1592,9 +1642,22 @@ func (u *Upload) Finish() (node *Node, err error) {
 	}
 	meta_mac := []uint32{t[0] ^ t[1], t[2] ^ t[3]}
 
-	attr := FileAttr{u.name}
+	attr := map[string]string{"n": u.name}
 
-	attr_data, err := encryptAttr(u.kbytes, attr)
+	u.mutex.Lock()
+	mtime := u.mtime
+	if !mtime.IsZero() {
+		var crc [16]byte
+		crc, err = u.fp.sum()
+		if err != nil {
+			u.mutex.Unlock()
+			return nil, err
+		}
+		attr["c"] = serializeFingerprint(crc, uint64(mtime.Unix()))
+	}
+	u.mutex.Unlock()
+
+	attr_data, err := encryptAttrMap(u.kbytes, attr)
 	if err != nil {
 		return nil, err
 	}
@@ -1655,10 +1718,12 @@ func (m *Mega) UploadFile(srcpath string, parent *Node, name string, progress *c
 
 	var infile *os.File
 	var fileSize int64
+	var statOk bool
 
 	info, err := os.Stat(srcpath)
 	if err == nil {
 		fileSize = info.Size()
+		statOk = true
 	}
 
 	infile, err = os.OpenFile(srcpath, os.O_RDONLY, 0666)
@@ -1679,6 +1744,13 @@ func (m *Mega) UploadFile(srcpath string, parent *Node, name string, progress *c
 	u, err := m.NewUpload(parent, name, fileSize)
 	if err != nil {
 		return nil, err
+	}
+
+	// Preserve the modification time of the source file in the
+	// fingerprint attribute of the new node, like the official MEGA
+	// clients do.
+	if statOk {
+		u.SetModificationTime(info.ModTime())
 	}
 
 	workch := make(chan int)
@@ -1795,8 +1867,21 @@ func (m *Mega) Rename(src *Node, name string) error {
 	if err != nil {
 		return err
 	}
-	attr := FileAttr{name}
-	attr_data, err := encryptAttr(src.meta.key, attr)
+
+	// Preserve all existing attributes of the node (in particular its
+	// fingerprint, which holds the modification time) and only update
+	// the name.
+	attrs := map[string]string{"n": name}
+	if src.meta.attrstring != "" {
+		if oldAttrs, aerr := decryptAttrMap(src.meta.key, src.meta.attrstring); aerr == nil {
+			for k, v := range oldAttrs {
+				attrs[k] = v
+			}
+		}
+	}
+	attrs["n"] = name
+
+	attr_data, err := encryptAttrMap(src.meta.key, attrs)
 	if err != nil {
 		return err
 	}
@@ -1825,6 +1910,171 @@ func (m *Mega) Rename(src *Node, name string) error {
 	}
 
 	src.name = name
+	src.meta.attrstring = attr_data
+
+	return nil
+}
+
+// getDownloadURL requests a temporary download URL for the node with
+// the given handle.
+func (m *Mega) getDownloadURL(nhash string) (string, error) {
+	var msg [1]DownloadMsg
+	var res [1]DownloadResp
+
+	msg[0].Cmd = "g"
+	msg[0].G = 1
+	msg[0].N = nhash
+	if m.config.https {
+		msg[0].SSL = 2
+	}
+
+	request, err := json.Marshal(msg)
+	if err != nil {
+		return "", err
+	}
+	result, err := m.api_request(request)
+	if err != nil {
+		return "", err
+	}
+
+	err = json.Unmarshal(result, &res)
+	if err != nil {
+		return "", err
+	}
+
+	// DownloadResp has an embedded error in it for some reason
+	if res[0].Err != 0 {
+		return "", parseError(res[0].Err)
+	}
+
+	downloadUrl := res[0].G
+	if m.config.https && strings.HasPrefix(downloadUrl, "http://") {
+		downloadUrl = "https://" + strings.TrimPrefix(downloadUrl, "http://")
+	}
+	return downloadUrl, nil
+}
+
+// megaRangeReader reads byte ranges from a MEGA download URL, whose
+// storage servers support selecting ranges as a URL path suffix.
+type megaRangeReader struct {
+	url    string
+	client *http.Client
+}
+
+func (r *megaRangeReader) ReadAt(p []byte, off int64) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	req, err := http.NewRequest("GET", fmt.Sprintf("%s/%d-%d", r.url, off, off+int64(len(p))-1), nil)
+	if err != nil {
+		return 0, err
+	}
+	rsp, err := r.client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer rsp.Body.Close()
+	if rsp.StatusCode != http.StatusOK && rsp.StatusCode != http.StatusPartialContent {
+		return 0, errors.New("Http Status: " + rsp.Status)
+	}
+	return io.ReadFull(rsp.Body, p)
+}
+
+// SetModificationTime updates the modification time of a file node in
+// its fingerprint attribute. If the node does not carry a fingerprint
+// yet, the required content samples are fetched from the storage
+// server to build one (about 8KiB of data). Folders don't support
+// modification times and return EARGS.
+func (m *Mega) SetModificationTime(src *Node, t time.Time) error {
+	if src == nil || t.IsZero() {
+		return EARGS
+	}
+
+	m.FS.mutex.Lock()
+	if src.ntype != FILE {
+		m.FS.mutex.Unlock()
+		return EARGS
+	}
+	name := src.name
+	hash := src.hash
+	size := src.size
+	key := src.meta.key
+	compkey := append([]byte(nil), src.meta.compkey...)
+	attrstring := src.meta.attrstring
+	m.FS.mutex.Unlock()
+
+	// Merge the new modification time into the existing attributes so
+	// that unknown ones are preserved.
+	attrs := map[string]string{"n": name}
+	if attrstring != "" {
+		if oldAttrs, err := decryptAttrMap(key, attrstring); err == nil {
+			for k, v := range oldAttrs {
+				attrs[k] = v
+			}
+		}
+	}
+	attrs["n"] = name
+
+	var crc [16]byte
+	haveCRC := false
+	if fingerprint, ok := attrs["c"]; ok {
+		if c, _, err := unserializeFingerprint(fingerprint); err == nil {
+			crc = c
+			haveCRC = true
+		}
+	}
+	if !haveCRC {
+		// No (valid) fingerprint: compute the CRC from the content of
+		// the file on the storage server.
+		url, err := m.getDownloadURL(hash)
+		if err != nil {
+			return err
+		}
+		crc, err = fingerprintCRCFromReader(&megaRangeReader{url: url, client: m.client}, size)
+		if err != nil {
+			return err
+		}
+	}
+	attrs["c"] = serializeFingerprint(crc, uint64(t.Unix()))
+
+	attr_data, err := encryptAttrMap(key, attrs)
+	if err != nil {
+		return err
+	}
+
+	master_aes, err := aes.NewCipher(m.k)
+	if err != nil {
+		return err
+	}
+	encKey := make([]byte, len(compkey))
+	err = blockEncrypt(master_aes, encKey, compkey)
+	if err != nil {
+		return err
+	}
+
+	var msg [1]FileAttrMsg
+	msg[0].Cmd = "a"
+	msg[0].Attr = attr_data
+	msg[0].Key = base64urlencode(encKey)
+	msg[0].N = hash
+	msg[0].I, err = randString(10)
+	if err != nil {
+		return err
+	}
+
+	req, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+	_, err = m.api_request(req)
+	if err != nil {
+		return err
+	}
+
+	m.FS.mutex.Lock()
+	defer m.FS.mutex.Unlock()
+	src.mtime = t
+	src.meta.attrstring = attr_data
 
 	return nil
 }
@@ -1849,7 +2099,7 @@ func (m *Mega) CreateDir(name string, parent *Node) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	attr := FileAttr{name}
+	attr := FileAttr{Name: name}
 	ukey, err := a32_to_bytes(compkey[:4])
 	if err != nil {
 		return nil, err
@@ -1969,6 +2219,8 @@ func (m *Mega) processUpdateNode(evRaw []byte) error {
 	attr, err := decryptAttr(node.meta.key, ev.Attr)
 	if err == nil {
 		node.name = attr.Name
+		node.mtime = parseModificationTime(attr.C)
+		node.meta.attrstring = ev.Attr
 	} else {
 		node.name = "BAD ATTRIBUTE"
 	}

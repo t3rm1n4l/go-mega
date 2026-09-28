@@ -9,6 +9,8 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"hash/crc32"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
@@ -299,40 +301,63 @@ func getChunkSizes(size int64) (chunks []chunkSize) {
 
 var attrMatch = regexp.MustCompile(`{".*"}`)
 
-func decryptAttr(key []byte, data string) (attr FileAttr, err error) {
+// decryptAttrMap decrypts and parses the encrypted attribute string
+// of a node, returning the decrypted attribute map. Attributes that
+// are unknown to this library are preserved so that they can be
+// rewritten unmodified when the attributes of a node are updated.
+func decryptAttrMap(key []byte, data string) (map[string]string, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
-		return attr, err
+		return nil, err
 	}
 	iv, err := a32_to_bytes([]uint32{0, 0, 0, 0})
 	if err != nil {
-		return attr, err
+		return nil, err
 	}
 	mode := cipher.NewCBCDecrypter(block, iv)
-	buf := make([]byte, len(data))
 	ddata, err := base64urldecode(data)
+	if err != nil {
+		return nil, err
+	}
+	buf := make([]byte, len(ddata))
+	mode.CryptBlocks(buf, ddata)
+
+	if string(buf[:4]) != "MEGA" {
+		return nil, errors.New("invalid attribute magic")
+	}
+	str := strings.TrimRight(string(buf[4:]), "\x00")
+	trimmed := attrMatch.FindString(str)
+	if trimmed != "" {
+		str = trimmed
+	}
+	attrs := make(map[string]string)
+	err = json.Unmarshal([]byte(str), &attrs)
+	if err != nil {
+		return nil, err
+	}
+	return attrs, nil
+}
+
+func decryptAttr(key []byte, data string) (attr FileAttr, err error) {
+	attrs, err := decryptAttrMap(key, data)
 	if err != nil {
 		return attr, err
 	}
-	mode.CryptBlocks(buf, ddata)
-
-	if string(buf[:4]) == "MEGA" {
-		str := strings.TrimRight(string(buf[4:]), "\x00")
-		trimmed := attrMatch.FindString(str)
-		if trimmed != "" {
-			str = trimmed
-		}
-		err = json.Unmarshal([]byte(str), &attr)
-	}
-	return attr, err
+	attr.Name = attrs["n"]
+	attr.C = attrs["c"]
+	return attr, nil
 }
 
-func encryptAttr(key []byte, attr FileAttr) (b string, err error) {
+// encryptAttrMap encrypts a node attribute map in the wire format
+// used by the MEGA API: a "MEGA" magic prefix followed by the JSON
+// encoded attributes, zero padded to a multiple of the AES block size
+// and encrypted with AES-CBC using a zero IV.
+func encryptAttrMap(key []byte, attrs map[string]string) (string, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return "", err
 	}
-	data, err := json.Marshal(attr)
+	data, err := json.Marshal(attrs)
 	if err != nil {
 		return "", err
 	}
@@ -347,8 +372,230 @@ func encryptAttr(key []byte, attr FileAttr) (b string, err error) {
 	mode := cipher.NewCBCEncrypter(block, iv)
 	mode.CryptBlocks(attrib, attrib)
 
-	b = base64urlencode(attrib)
-	return b, nil
+	return base64urlencode(attrib), nil
+}
+
+func encryptAttr(key []byte, attr FileAttr) (b string, err error) {
+	attrs := map[string]string{"n": attr.Name}
+	if attr.C != "" {
+		attrs["c"] = attr.C
+	}
+	return encryptAttrMap(key, attrs)
+}
+
+// serialize64 encodes v in the format used by the MEGA SDK for the
+// modification time stored in file fingerprints: one length byte
+// (0-8) followed by that many bytes of the value in little endian
+// order.
+func serialize64(v uint64) []byte {
+	payload := make([]byte, 0, 8)
+	for v > 0 {
+		payload = append(payload, byte(v))
+		v >>= 8
+	}
+	return append([]byte{byte(len(payload))}, payload...)
+}
+
+// unserialize64 decodes a value encoded with serialize64. It returns
+// the value and the number of bytes consumed.
+func unserialize64(b []byte) (uint64, int, error) {
+	if len(b) == 0 || int(b[0]) > 8 || int(b[0])+1 > len(b) {
+		return 0, 0, errors.New("invalid serialized value")
+	}
+	n := int(b[0])
+	var v uint64
+	for i := n; i > 0; i-- {
+		v = v<<8 | uint64(b[i])
+	}
+	return v, n + 1, nil
+}
+
+// The fingerprint CRC covers the full content of files up to this
+// size. Larger files are sampled with sparse blocks.
+const fingerprintMaxFull = 8192
+
+const (
+	// Size of the fingerprint CRC (4 CRC32 lanes of 4 bytes each).
+	fingerprintCRCSize = 16
+	// Number of sparse blocks read per CRC lane for large files.
+	fingerprintSparseBlocks = 32
+	// Size of each sparse block in bytes.
+	fingerprintSparseBlock = 64
+)
+
+// fingerprintSparseOffset returns the file offset of the sparse
+// fingerprint block with index idx (0..4*fingerprintSparseBlocks-1)
+// in a file of size sz. It mirrors the offset computation of the
+// official MEGA SDK.
+func fingerprintSparseOffset(sz int64, idx int) int64 {
+	denom := int64(4*fingerprintSparseBlocks - 1)
+	off := (sz - fingerprintSparseBlock) * int64(idx) / denom
+	if off > sz-fingerprintSparseBlock {
+		off = sz - fingerprintSparseBlock
+	}
+	return off
+}
+
+// fingerprintCRC computes the 16 byte CRC part of a MEGA file
+// fingerprint. The required byte ranges are collected from write()
+// calls, which may arrive at arbitrary offsets in arbitrary order
+// (and may partially cover the required blocks), and the CRC is
+// assembled in sum(). Once sum() has been called the collector must
+// not be used anymore.
+type fingerprintCRC struct {
+	size    int64
+	buf     []byte   // content of files up to fingerprintMaxFull bytes
+	offsets []int64  // required sparse block offsets (ascending)
+	blocks  [][]byte // sparse block buffers, aligned with offsets
+	filled  []int    // number of bytes collected per sparse block
+}
+
+func newFingerprintCRC(size int64) *fingerprintCRC {
+	f := &fingerprintCRC{size: size}
+	if size <= fingerprintMaxFull {
+		f.buf = make([]byte, size)
+	} else {
+		f.offsets = make([]int64, 4*fingerprintSparseBlocks)
+		f.blocks = make([][]byte, 4*fingerprintSparseBlocks)
+		f.filled = make([]int, 4*fingerprintSparseBlocks)
+		for i := range f.offsets {
+			f.offsets[i] = fingerprintSparseOffset(size, i)
+		}
+	}
+	return f
+}
+
+// write records the bytes of data located at file offset pos.
+func (f *fingerprintCRC) write(pos int64, data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	if f.buf != nil {
+		start := pos
+		if start < 0 {
+			start = 0
+		}
+		end := pos + int64(len(data))
+		if end > f.size {
+			end = f.size
+		}
+		if start < end {
+			copy(f.buf[start:end], data[start-pos:end-pos])
+		}
+		return
+	}
+	// Sparse mode: record the overlap of [pos, pos+len(data)) with
+	// each required block. Blocks may be covered by several write
+	// calls, so partial fills are accumulated.
+	end := pos + int64(len(data))
+	for i := range f.offsets {
+		bStart, bEnd := f.offsets[i], f.offsets[i]+int64(fingerprintSparseBlock)
+		s, e := bStart, bEnd
+		if s < pos {
+			s = pos
+		}
+		if e > end {
+			e = end
+		}
+		if s >= e {
+			continue
+		}
+		if f.blocks[i] == nil {
+			f.blocks[i] = make([]byte, fingerprintSparseBlock)
+		}
+		copy(f.blocks[i][s-bStart:e-bStart], data[s-pos:e-pos])
+		f.filled[i] += int(e - s)
+	}
+}
+
+// sum assembles the CRC lanes and returns the fingerprint CRC. It
+// fails if the required byte ranges have not been collected.
+func (f *fingerprintCRC) sum() ([16]byte, error) {
+	var crc [16]byte
+	if f.buf != nil {
+		if f.size <= fingerprintCRCSize {
+			// Tiny files: the CRC is the file content itself,
+			// zero padded.
+			copy(crc[:], f.buf)
+			return crc, nil
+		}
+		for i := 0; i < 4; i++ {
+			h := crc32.NewIEEE()
+			begin := f.size * int64(i) / 4
+			end := f.size * int64(i+1) / 4
+			h.Write(f.buf[begin:end])
+			binary.BigEndian.PutUint32(crc[i*4:], h.Sum32())
+		}
+		return crc, nil
+	}
+	for i := range f.blocks {
+		if f.blocks[i] == nil || f.filled[i] != fingerprintSparseBlock {
+			return crc, errors.New("fingerprint data incomplete")
+		}
+	}
+	for i := 0; i < 4; i++ {
+		h := crc32.NewIEEE()
+		for j := 0; j < fingerprintSparseBlocks; j++ {
+			h.Write(f.blocks[i*fingerprintSparseBlocks+j])
+		}
+		binary.BigEndian.PutUint32(crc[i*4:], h.Sum32())
+	}
+	return crc, nil
+}
+
+// fingerprintCRCFromReader computes the fingerprint CRC of a file of
+// the given size by reading only the byte ranges required by the CRC
+// algorithm from r.
+func fingerprintCRCFromReader(r io.ReaderAt, size int64) ([16]byte, error) {
+	var crc [16]byte
+	if size < 0 {
+		return crc, errors.New("invalid file size")
+	}
+	f := newFingerprintCRC(size)
+	if f.buf != nil {
+		if len(f.buf) > 0 {
+			if _, err := r.ReadAt(f.buf, 0); err != nil && err != io.EOF {
+				return crc, err
+			}
+		}
+	} else {
+		for i, off := range f.offsets {
+			f.blocks[i] = make([]byte, fingerprintSparseBlock)
+			if _, err := r.ReadAt(f.blocks[i], off); err != nil && err != io.EOF {
+				return crc, err
+			}
+			f.filled[i] = fingerprintSparseBlock
+		}
+	}
+	return f.sum()
+}
+
+// serializeFingerprint serializes a fingerprint CRC and a modification
+// time (in seconds) into the base64 encoded value of the node
+// fingerprint attribute ("c").
+func serializeFingerprint(crc [16]byte, mtime uint64) string {
+	buf := make([]byte, 0, fingerprintCRCSize+9)
+	buf = append(buf, crc[:]...)
+	buf = append(buf, serialize64(mtime)...)
+	return base64urlencode(buf)
+}
+
+// unserializeFingerprint parses the value of a node fingerprint
+// attribute ("c") into its CRC part and modification time in seconds.
+func unserializeFingerprint(s string) (crc [16]byte, mtime uint64, err error) {
+	data, err := base64urldecode(s)
+	if err != nil {
+		return crc, 0, err
+	}
+	if len(data) < fingerprintCRCSize+1 {
+		return crc, 0, errors.New("fingerprint too short")
+	}
+	copy(crc[:], data[:fingerprintCRCSize])
+	mtime, _, err = unserialize64(data[fingerprintCRCSize:])
+	if err != nil {
+		return [16]byte{}, 0, err
+	}
+	return crc, mtime, nil
 }
 
 func randString(l int) (string, error) {
