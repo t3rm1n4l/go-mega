@@ -105,6 +105,9 @@ type FilesResp struct {
 
 type FileAttr struct {
 	Name string `json:"n"`
+	// C is the base64 encoded file fingerprint, which holds the CRC
+	// of the file content and its modification time.
+	C string `json:"c,omitempty"`
 }
 
 type GetLinkMsg struct {
