@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sync"
@@ -480,5 +482,28 @@ func TestProcessDeleteNode(t *testing.T) {
 	}
 	if _, found := m.FS.lookup["X"]; found {
 		t.Errorf("node not removed from lookup on delete")
+	}
+}
+
+// TestAPIRequestRetriesExhausted checks that api_request returns the
+// last error rather than nil when every retry gets EAGAIN.
+func TestAPIRequestRetriesExhausted(t *testing.T) {
+	var requests int
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		_, _ = w.Write([]byte("-3"))
+	}))
+	defer ts.Close()
+
+	m := New()
+	m.SetAPIUrl(ts.URL)
+	m.SetRetries(2)
+
+	buf, err := m.api_request([]byte(`[{"a":"f"}]`))
+	if err != EAGAIN {
+		t.Errorf("want error %v, got %v (buf %q)", EAGAIN, err, buf)
+	}
+	if requests != 3 {
+		t.Errorf("want 3 requests, got %d", requests)
 	}
 }

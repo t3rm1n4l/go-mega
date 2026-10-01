@@ -445,7 +445,8 @@ func (m *Mega) api_request(r []byte) (buf []byte, err error) {
 		}
 
 		// Create request
-		req, err := http.NewRequest("POST", url, bytes.NewBuffer(r))
+		var req *http.Request
+		req, err = http.NewRequest("POST", url, bytes.NewBuffer(r))
 		if err != nil {
 			continue
 		}
@@ -477,7 +478,8 @@ func (m *Mega) api_request(r []byte) (buf []byte, err error) {
 			_ = resp.Body.Close()
 
 			// Generate hashcash response
-			cashValue, err := solveHashCashChallenge(token, easiness, HASHCASH_CHALLENGE_TIMEOUT, halfCPUCores())
+			var cashValue string
+			cashValue, err = solveHashCashChallenge(token, easiness, HASHCASH_CHALLENGE_TIMEOUT, halfCPUCores())
 			if err != nil {
 				m.debugf("Failed to solve hashcash challenge: %v", err)
 				continue
