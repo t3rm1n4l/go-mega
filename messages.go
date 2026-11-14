@@ -131,6 +131,7 @@ type DownloadResp struct {
 	G    string   `json:"g"`
 	Size uint64   `json:"s"`
 	Attr string   `json:"at"`
+	Ts   int64    `json:"ts,omitempty"`
 	Err  ErrorMsg `json:"e"`
 }
 

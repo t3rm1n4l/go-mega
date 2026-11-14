@@ -113,10 +113,11 @@ func validHandle(handle string) bool {
 
 // Entry is a relative-path metadata snapshot; it contains no encryption keys.
 type Entry struct {
-	Path     string
-	Handle   string
-	Size     int64
-	IsFolder bool
+	Path      string
+	Handle    string
+	Size      int64
+	IsFolder  bool
+	Timestamp time.Time
 }
 
 // PublicResource is an immutable resolved public file or subtree.
@@ -131,10 +132,16 @@ type PublicResource struct {
 	name    string // root's local name; entry paths are local names too
 }
 
-func (r *PublicResource) Name() string     { return r.name }
-func (r *PublicResource) Size() int64      { return r.size }
-func (r *PublicResource) IsFolder() bool   { return r.root.ntype == FOLDER }
-func (r *PublicResource) Entries() []Entry { return append([]Entry(nil), r.entries...) }
+func (r *PublicResource) Name() string          { return r.name }
+func (r *PublicResource) Size() int64           { return r.size }
+func (r *PublicResource) IsFolder() bool        { return r.root.ntype == FOLDER }
+func (r *PublicResource) Entries() []Entry      { return append([]Entry(nil), r.entries...) }
+func (r *PublicResource) Timestamp() time.Time  {
+	if r.root != nil {
+		return r.root.ts
+	}
+	return time.Time{}
+}
 
 func fileMeta(key []byte) (NodeMeta, error) {
 	if len(key) != 32 {
@@ -181,7 +188,11 @@ func (m *Mega) ResolvePublic(ctx context.Context, raw string) (*PublicResource, 
 		if err != nil {
 			return nil, err
 		}
-		resource.root = &Node{fs: fs, name: attr.Name, hash: link.Handle, ntype: FILE, size: int64(response[0].Size), meta: meta, publicHandle: link.Handle}
+		var fileTs time.Time
+		if response[0].Ts > 0 {
+			fileTs = time.Unix(response[0].Ts, 0)
+		}
+		resource.root = &Node{fs: fs, name: attr.Name, hash: link.Handle, ntype: FILE, size: int64(response[0].Size), ts: fileTs, meta: meta, publicHandle: link.Handle}
 	} else {
 		resource.folder = link.Handle
 		payload, _ := json.Marshal([]FilesMsg{{Cmd: "f", C: 1, R: 1}})
@@ -324,7 +335,7 @@ func (r *PublicResource) snapshot() error {
 		if parent != "" {
 			relative = parent + "/" + relative
 		}
-		r.entries = append(r.entries, Entry{Path: relative, Handle: node.hash, Size: node.size, IsFolder: node.ntype == FOLDER})
+		r.entries = append(r.entries, Entry{Path: relative, Handle: node.hash, Size: node.size, IsFolder: node.ntype == FOLDER, Timestamp: node.ts})
 		r.nodes = append(r.nodes, node)
 		if node.ntype == FILE {
 			if node.size > math.MaxInt64-r.size {
