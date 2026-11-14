@@ -16,9 +16,9 @@ func TestStreamRangeFull(t *testing.T) {
 		t.Fatalf("resolve failed: %v", err)
 	}
 
-	reader, size, err := res.DownloadReader(context.Background(), fixtureHandle)
+	reader, size, err := res.OpenStream(context.Background(), fixtureHandle, 0, int64(len(data)-1))
 	if err != nil {
-		t.Fatalf("DownloadReader failed: %v", err)
+		t.Fatalf("OpenStream failed: %v", err)
 	}
 	defer reader.Close()
 
@@ -154,5 +154,47 @@ func TestStreamPipelinedMultiSpan(t *testing.T) {
 
 	if !bytes.Equal(got, data) {
 		t.Fatal("pipelined multi-span content mismatch against source data")
+	}
+}
+
+func TestStreamUnalignedAcrossSpans(t *testing.T) {
+	data := make([]byte, 5*1024*1024+123)
+	for i := range data {
+		data[i] = byte((i * 17) % 251)
+	}
+	m, link, _ := fileFixture(t, data, false)
+	res, err := m.ResolvePublic(context.Background(), link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start, end := int64(300007), int64(len(data)-4001)
+	reader, size, err := res.OpenStream(context.Background(), fixtureHandle, start, end)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	got, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if size != end-start+1 || !bytes.Equal(got, data[start:end+1]) {
+		t.Fatalf("mismatch: size %d len %d", size, len(got))
+	}
+}
+
+func TestStreamEarlyClose(t *testing.T) {
+	data := make([]byte, 6*1024*1024)
+	m, link, _ := fileFixture(t, data, false)
+	res, err := m.ResolvePublic(context.Background(), link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, _, err := res.OpenStream(context.Background(), fixtureHandle, 0, int64(len(data)-1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.ReadFull(reader, make([]byte, 1000))
+	if err := reader.Close(); err != nil {
+		t.Fatal(err)
 	}
 }

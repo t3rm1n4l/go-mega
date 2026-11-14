@@ -203,7 +203,11 @@ func (d *Download) streamSpan(ctx context.Context, next *int, last int, buf, scr
 		if err = d.verifyChunk(*next, chunk, scratch); err != nil {
 			return err
 		}
-		if err = write(*next, chunk); err != nil {
+		// A slow consumer (e.g. a paused player) is not a MEGA stall.
+		body.timer.Stop()
+		err = write(*next, chunk)
+		body.timer.Reset(timeout)
+		if err != nil {
 			return err
 		}
 	}
