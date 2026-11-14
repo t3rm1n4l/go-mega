@@ -1,0 +1,121 @@
+package mega
+
+import (
+	"bytes"
+	"context"
+	"io"
+	"testing"
+)
+
+func TestStreamRangeFull(t *testing.T) {
+	data := []byte("Hello Mega Streaming World! This is a test of AES-CTR on the fly streaming.")
+	m, link, _ := fileFixture(t, data, false)
+
+	res, err := m.ResolvePublic(context.Background(), link)
+	if err != nil {
+		t.Fatalf("resolve failed: %v", err)
+	}
+
+	reader, size, err := res.DownloadReader(context.Background(), fixtureHandle)
+	if err != nil {
+		t.Fatalf("DownloadReader failed: %v", err)
+	}
+	defer reader.Close()
+
+	if size != int64(len(data)) {
+		t.Fatalf("size mismatch: got %d, want %d", size, len(data))
+	}
+
+	got, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("ReadAll failed: %v", err)
+	}
+
+	if !bytes.Equal(got, data) {
+		t.Fatalf("content mismatch:\ngot:  %q\nwant: %q", string(got), string(data))
+	}
+}
+
+func TestStreamRangeArbitrarySlices(t *testing.T) {
+	// 500 bytes of non-repeating data
+	data := make([]byte, 500)
+	for i := range data {
+		data[i] = byte(i % 256)
+	}
+
+	m, link, _ := fileFixture(t, data, false)
+	res, err := m.ResolvePublic(context.Background(), link)
+	if err != nil {
+		t.Fatalf("resolve failed: %v", err)
+	}
+
+	testCases := []struct {
+		name  string
+		start int64
+		end   int64
+	}{
+		{"First 16 bytes (aligned)", 0, 15},
+		{"Second block (aligned)", 16, 31},
+		{"Single byte at offset 0", 0, 0},
+		{"Single byte at offset 17 (unaligned)", 17, 17},
+		{"Unaligned start across block boundary", 5, 25},
+		{"Deep unaligned slice", 33, 199},
+		{"Last byte", int64(len(data) - 1), int64(len(data) - 1)},
+		{"Full range via OpenStream", 0, int64(len(data) - 1)},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			reader, size, err := res.OpenStream(context.Background(), fixtureHandle, tc.start, tc.end)
+			if err != nil {
+				t.Fatalf("OpenStream(%d, %d) failed: %v", tc.start, tc.end, err)
+			}
+			defer reader.Close()
+
+			expectedLen := tc.end - tc.start + 1
+			if size != expectedLen {
+				t.Fatalf("size mismatch: got %d, want %d", size, expectedLen)
+			}
+
+			got, err := io.ReadAll(reader)
+			if err != nil {
+				t.Fatalf("ReadAll failed: %v", err)
+			}
+
+			want := data[tc.start : tc.end+1]
+			if !bytes.Equal(got, want) {
+				t.Fatalf("slice mismatch for [%d:%d]:\ngot len %d, want len %d", tc.start, tc.end, len(got), len(want))
+			}
+		})
+	}
+}
+
+func TestStreamRangeBounds(t *testing.T) {
+	data := []byte("boundary check data")
+	m, link, _ := fileFixture(t, data, false)
+
+	res, err := m.ResolvePublic(context.Background(), link)
+	if err != nil {
+		t.Fatalf("resolve failed: %v", err)
+	}
+
+	// Negative start
+	if _, _, err := res.OpenStream(context.Background(), fixtureHandle, -1, 5); err == nil {
+		t.Error("expected error for negative start")
+	}
+
+	// Start > End
+	if _, _, err := res.OpenStream(context.Background(), fixtureHandle, 10, 5); err == nil {
+		t.Error("expected error for start > end")
+	}
+
+	// End >= size
+	if _, _, err := res.OpenStream(context.Background(), fixtureHandle, 0, int64(len(data))); err == nil {
+		t.Error("expected error for end >= size")
+	}
+
+	// Non-existent handle
+	if _, _, err := res.OpenStream(context.Background(), "NONEXIST", 0, 5); err == nil {
+		t.Error("expected error for unknown handle")
+	}
+}
