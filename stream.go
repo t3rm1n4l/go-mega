@@ -9,7 +9,7 @@ import (
 )
 
 // streamBufferCap bounds decrypted-but-unread bytes held for one stream.
-const streamBufferCap = 32 << 20
+const streamBufferCap = 8 << 20
 
 // LookupEntry returns entry metadata for the given handle.
 func (r *PublicResource) LookupEntry(handle string) (Entry, bool) {
