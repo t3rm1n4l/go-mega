@@ -6,6 +6,7 @@ import (
 	"io"
 	"sort"
 	"sync"
+	"time"
 )
 
 // streamBufferCap bounds decrypted-but-unread bytes held for one stream.
@@ -30,6 +31,64 @@ func (r *PublicResource) findNode(handle string) *Node {
 	return nil
 }
 
+// downloadTTL bounds how long a resolved download URL is reused; expired URLs
+// are refreshed on demand anyway, this just keeps entries fresh.
+const downloadTTL = time.Hour
+
+type dlEntry struct {
+	ready chan struct{} // closed once d/err/at are set
+	d     *Download
+	err   error
+	at    time.Time
+}
+
+// download returns the Download for node, asking MEGA's API only once per
+// file: every API call of a client is serialized, and download managers open
+// many connections and ranges per file. Concurrent first callers share one
+// call; failures are not kept, so the next caller retries.
+func (r *PublicResource) download(ctx context.Context, node *Node) (*Download, error) {
+	for {
+		r.dlMu.Lock()
+		if r.dls == nil {
+			r.dls = map[string]*dlEntry{}
+		}
+		e := r.dls[node.hash]
+		if e != nil {
+			select {
+			case <-e.ready:
+				if e.err != nil || time.Since(e.at) > downloadTTL {
+					e = nil
+				}
+			default:
+			}
+		}
+		if e == nil {
+			e = &dlEntry{ready: make(chan struct{})}
+			r.dls[node.hash] = e
+			r.dlMu.Unlock()
+			d, err := r.client.NewDownloadContext(ctx, node)
+			r.dlMu.Lock()
+			if err != nil && r.dls[node.hash] == e {
+				delete(r.dls, node.hash)
+			}
+			e.d, e.err, e.at = d, err, time.Now()
+			r.dlMu.Unlock()
+			close(e.ready)
+			return d, err
+		}
+		r.dlMu.Unlock()
+		select {
+		case <-e.ready:
+			if e.err == nil {
+				return e.d, nil
+			}
+			// The caller that fetched it failed (maybe only its own context): retry.
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+}
+
 // OpenStream returns a reader for the inclusive byte range [start, end] without
 // touching disk. It runs on the same span engine as file downloads (parallel
 // GETs, retry/resume, stall timeout, URL refresh); chunks are decrypted by the
@@ -52,7 +111,7 @@ func (r *PublicResource) OpenStream(ctx context.Context, handle string, start, e
 		return nil, 0, EARGS
 	}
 
-	d, err := r.client.NewDownloadContext(ctx, node)
+	d, err := r.download(ctx, node)
 	if err != nil {
 		return nil, 0, err
 	}

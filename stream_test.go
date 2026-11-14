@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"sync"
 	"testing"
 )
 
@@ -196,5 +197,49 @@ func TestStreamEarlyClose(t *testing.T) {
 	_, _ = io.ReadFull(reader, make([]byte, 1000))
 	if err := reader.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestOpenStreamAsksMegaOncePerFile(t *testing.T) {
+	data := make([]byte, 3<<20)
+	for i := range data {
+		data[i] = byte(i % 253)
+	}
+	m, link, _ := fileFixture(t, data, false)
+	res, err := m.ResolvePublic(context.Background(), link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := m.sn // every API call advances the sequence number
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			start := int64(i) * 100000
+			reader, _, err := res.OpenStream(context.Background(), fixtureHandle, start, start+200000)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			defer reader.Close()
+			got, err := io.ReadAll(reader)
+			if err != nil || !bytes.Equal(got, data[start:start+200001]) {
+				t.Errorf("range %d mismatch: %v", i, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	if calls := m.sn - before; calls != 1 {
+		t.Fatalf("8 concurrent streams made %d API calls, want 1", calls)
+	}
+	reader, _, err := res.OpenStream(context.Background(), fixtureHandle, 0, 9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader.Close()
+	if calls := m.sn - before; calls != 1 {
+		t.Fatalf("a later stream made another API call (%d total)", calls)
 	}
 }

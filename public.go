@@ -10,6 +10,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -130,6 +131,9 @@ type PublicResource struct {
 	size    int64
 	folder  string
 	name    string // root's local name; entry paths are local names too
+
+	dlMu sync.Mutex
+	dls  map[string]*dlEntry // streaming download state per file handle
 }
 
 func (r *PublicResource) Name() string          { return r.name }
