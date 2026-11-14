@@ -119,3 +119,40 @@ func TestStreamRangeBounds(t *testing.T) {
 		t.Error("expected error for unknown handle")
 	}
 }
+
+func TestStreamPipelinedMultiSpan(t *testing.T) {
+	// 5 MiB of pseudorandom data to cross multiple 2 MiB pipeline spans
+	data := make([]byte, 5*1024*1024)
+	for i := range data {
+		data[i] = byte((i * 31) % 256)
+	}
+
+	m, link, _ := fileFixture(t, data, false)
+	res, err := m.ResolvePublic(context.Background(), link)
+	if err != nil {
+		t.Fatalf("resolve failed: %v", err)
+	}
+
+	reader, size, err := res.OpenStream(context.Background(), fixtureHandle, 0, int64(len(data)-1))
+	if err != nil {
+		t.Fatalf("OpenStream failed: %v", err)
+	}
+	defer reader.Close()
+
+	if size != int64(len(data)) {
+		t.Fatalf("size mismatch: got %d, want %d", size, len(data))
+	}
+
+	got, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("ReadAll failed: %v", err)
+	}
+
+	if len(got) != len(data) {
+		t.Fatalf("len mismatch: got %d, want %d", len(got), len(data))
+	}
+
+	if !bytes.Equal(got, data) {
+		t.Fatal("pipelined multi-span content mismatch against source data")
+	}
+}
