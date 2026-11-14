@@ -12,28 +12,20 @@ import (
 	"math/big"
 	"net"
 	"net/http"
-	"regexp"
-	"runtime"
 	"strings"
 	"time"
 )
 
 func newHttpClient(timeout time.Duration) *http.Client {
-	// TODO: Need to test this out
-	// Doesn't seem to work as expected
-	c := &http.Client{
-		Transport: &http.Transport{
-			Dial: func(netw, addr string) (net.Conn, error) {
-				c, err := net.DialTimeout(netw, addr, timeout)
-				if err != nil {
-					return nil, err
-				}
-				return c, nil
-			},
-			Proxy: http.ProxyFromEnvironment,
-		},
-	}
-	return c
+	dialer := &net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second}
+	return &http.Client{Timeout: timeout, Transport: &http.Transport{
+		Proxy: http.ProxyFromEnvironment, DialContext: dialer.DialContext,
+		// HTTP/1.1 keeps one TCP connection per transfer worker; HTTP/2 would
+		// multiplex every worker onto a single congestion window.
+		MaxIdleConns: 64, MaxIdleConnsPerHost: 32,
+		IdleConnTimeout: 90 * time.Second, TLSHandshakeTimeout: timeout,
+		ResponseHeaderTimeout: timeout,
+	}}
 }
 
 // bytes_to_a32 converts the byte slice b to uint32 slice considering
@@ -184,7 +176,13 @@ func stringhash(s string, k []byte) (string, error) {
 // getMPI returns the length encoded Int and the next slice.
 func getMPI(b []byte) (*big.Int, []byte) {
 	p := new(big.Int)
+	if len(b) < 2 {
+		return p, nil
+	}
 	plen := (uint64(b[0])*256 + uint64(b[1]) + 7) >> 3
+	if plen == 0 || plen > uint64(len(b)-2) {
+		return p, nil
+	}
 	p.SetBytes(b[2 : plen+2])
 	b = b[plen+2:]
 	return p, b
@@ -266,8 +264,14 @@ func decryptSessionId(privk string, csid string, mk []byte) (string, error) {
 	m, _ := getMPI(c)
 
 	p, q, d := getRSAKey(pk)
+	if m.Sign() == 0 || p.Sign() == 0 || q.Sign() == 0 || d.Sign() == 0 {
+		return "", EBADRESP
+	}
 	r := decryptRSA(m, p, q, d)
 
+	if len(r) < 43 {
+		return "", EBADRESP
+	}
 	return base64urlencode(r[:43]), nil
 
 }
@@ -297,8 +301,6 @@ func getChunkSizes(size int64) (chunks []chunkSize) {
 	return chunks
 }
 
-var attrMatch = regexp.MustCompile(`{".*"}`)
-
 func decryptAttr(key []byte, data string) (attr FileAttr, err error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
@@ -309,21 +311,16 @@ func decryptAttr(key []byte, data string) (attr FileAttr, err error) {
 		return attr, err
 	}
 	mode := cipher.NewCBCDecrypter(block, iv)
-	buf := make([]byte, len(data))
 	ddata, err := base64urldecode(data)
-	if err != nil {
-		return attr, err
+	if err != nil || len(ddata) == 0 || len(ddata)%aes.BlockSize != 0 {
+		return attr, EBADATTR
 	}
+	buf := make([]byte, len(ddata))
 	mode.CryptBlocks(buf, ddata)
-
-	if string(buf[:4]) == "MEGA" {
-		str := strings.TrimRight(string(buf[4:]), "\x00")
-		trimmed := attrMatch.FindString(str)
-		if trimmed != "" {
-			str = trimmed
-		}
-		err = json.Unmarshal([]byte(str), &attr)
+	if !bytes.HasPrefix(buf, []byte("MEGA")) {
+		return attr, EKEY
 	}
+	err = json.Unmarshal(bytes.TrimRight(buf[4:], "\x00"), &attr)
 	return attr, err
 }
 
@@ -363,14 +360,4 @@ func randString(l int) (string, error) {
 	enc.Encode(d, b)
 	d = d[:l]
 	return strings.NewReplacer("/", "A", "+", "B").Replace(string(d)), nil
-}
-
-// halfCPUCores returns half the number of logical CPU cores available.
-// The return value is always at least 1, even if the system reports fewer than 2 cores.
-func halfCPUCores() int {
-	n := runtime.NumCPU() / 2
-	if n < 1 {
-		return 1
-	}
-	return n
 }

@@ -8,12 +8,12 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 const numReplications = 262144
 const tokenSlotSize = 48
-const doneCtxCheckWhenNthIteration = 1000
 
 // Base64ToBytes decodes a base64url-encoded string to a byte slice
 func Base64ToBytes(s string) ([]byte, error) {
@@ -57,87 +57,58 @@ func parseHashcash(header string) (easiness int, token string, valid bool) {
 	return e, parts[3], true
 }
 
-// gencash generates a hashcash value based on the token and easiness
-func gencash(ctx context.Context, token string, easiness int) string {
+func gencashRange(ctx context.Context, token string, easiness, start, step int) string {
+	if ctx.Err() != nil {
+		return ""
+	}
 	threshold := uint32((((easiness & 63) << 1) + 1) << ((easiness>>6)*7 + 3))
 	tokenBytes, err := Base64ToBytes(token)
 	if err != nil {
 		return ""
 	}
-
 	tokenBytes = PadToAESBlockSize(tokenBytes)
-	buffer := make([]byte, 4+numReplications*tokenSlotSize) // 12 MB!
-
-	// Replicate token data across the buffer
+	buffer := make([]byte, 4+numReplications*tokenSlotSize)
 	for i := 0; i < numReplications; i++ {
 		copy(buffer[4+i*tokenSlotSize:], tokenBytes)
 	}
-
-	prefix := make([]byte, 4)
-
-	// Try different prefixes until we find one that satisfies the threshold
-	iterations := 0
-	for {
-		// Check context every doneCtxCheckWhenNthIteration iterations
-		if iterations++; iterations%doneCtxCheckWhenNthIteration == 0 {
-			select {
-			case <-ctx.Done():
-				return ""
-			default:
-			}
+	for nonce := uint64(start) + 1; nonce < 1<<32; nonce += uint64(step) {
+		if ctx.Err() != nil {
+			return ""
 		}
-
-		// Increment prefix
-		prefixSize := 4
-		for j := 0; j < prefixSize; j++ {
-			buffer[j]++
-			if buffer[j] != 0 {
-				break
-			}
-			// last byte overflowed to zero
-			if j == prefixSize-1 {
-				return ""
-			}
-		}
-
-		// Save prefix for later
-		copy(prefix, buffer[:4])
-
+		binary.LittleEndian.PutUint32(buffer[:4], uint32(nonce))
 		hash := sha256.Sum256(buffer)
-		hashValue := binary.BigEndian.Uint32(hash[:4])
-		if hashValue <= threshold {
-			return base64.RawURLEncoding.EncodeToString(prefix)
+		if binary.BigEndian.Uint32(hash[:4]) <= threshold {
+			return base64.RawURLEncoding.EncodeToString(buffer[:4])
 		}
 	}
+	return ""
 }
 
-func solveHashCashChallenge(token string, easiness int, timeout time.Duration, workers int) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
+func solveHashCashChallengeContext(parent context.Context, token string, easiness int, timeout time.Duration, workers int) (string, error) {
+	if _, err := Base64ToBytes(token); err != nil {
+		return "", EARGS
+	}
+	if workers < 1 || workers > 32 || easiness < 0 || easiness > 255 {
+		return "", EARGS
+	}
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	var wg sync.WaitGroup
+	defer func() { cancel(); wg.Wait() }()
 
 	resultChan := make(chan string, workers)
 
-	workerFunc := func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				result := gencash(ctx, token, easiness)
-				if result != "" {
-					select {
-					case resultChan <- result:
-						return
-					case <-ctx.Done():
-						return
-					}
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(start int) {
+			defer wg.Done()
+			result := gencashRange(ctx, token, easiness, start, workers)
+			if result != "" {
+				select {
+				case resultChan <- result:
+				case <-ctx.Done():
 				}
 			}
-		}
-	}
-
-	for i := 0; i < workers; i++ {
-		go workerFunc()
+		}(i)
 	}
 
 	select {

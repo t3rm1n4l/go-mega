@@ -18,12 +18,35 @@ This is an API client library for MEGA storage service. Currently, the library s
   - Rename file or directory
   - Delete file or directory
   - Parallel split download and upload
+  - Download public file and folder links, including links to a file or subfolder inside a shared folder
+  - Recursive folder upload with an export link
+  - Context-aware operations with cancellation
   - Filesystem events auto sync
   - Unit tests
 
 ### API methods
 
 Please find full doc at [https://pkg.go.dev/github.com/t3rm1n4l/go-mega](https://pkg.go.dev/github.com/t3rm1n4l/go-mega)
+
+### Public links
+
+```go
+m := mega.New()
+defer m.Close()
+
+// Resolve name, size and tree without transferring content.
+res, err := m.ResolvePublic(ctx, "https://mega.nz/folder/<handle>#<key>")
+if err != nil {
+	return err
+}
+result, err := res.Download(ctx, "/path/to/output", func(p mega.Progress) {
+	fmt.Printf("%s: %d/%d bytes\n", p.Name, p.Transferred, p.Total)
+})
+```
+
+Downloads are written to a staging directory and only moved into place after
+every chunk passes MEGA's MAC check. After `LoginContext`, public-link requests
+carry the account session, so transfers count against that account.
 
 ### Testing
 
@@ -57,7 +80,6 @@ Please find full doc at [https://pkg.go.dev/github.com/t3rm1n4l/go-mega](https:/
 
 ### TODO
   - Implement APIs for public download url generation
-  - Implement download from public url
   - Add shared user content management APIs
   - Add contact list management APIs
 

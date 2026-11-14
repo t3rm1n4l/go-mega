@@ -104,3 +104,13 @@ func parseError(errno ErrorMsg) error {
 		return fmt.Errorf("Unknown mega error %d", errno)
 	}
 }
+
+// FileError names the file, as its path inside a public resource, that a
+// download failed on. errors.Is/As still reach the cause, e.g. EMACMISMATCH.
+type FileError struct {
+	Path string
+	Err  error
+}
+
+func (e *FileError) Error() string { return e.Path + ": " + e.Err.Error() }
+func (e *FileError) Unwrap() error { return e.Err }
