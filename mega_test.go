@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
@@ -480,5 +481,59 @@ func TestProcessDeleteNode(t *testing.T) {
 	}
 	if _, found := m.FS.lookup["X"]; found {
 		t.Errorf("node not removed from lookup on delete")
+	}
+}
+
+func TestSetProxy(t *testing.T) {
+	m := New()
+
+	// Test valid proxy URL
+	proxyStr := "http://127.0.0.1:8080"
+	err := m.SetProxy(proxyStr)
+	if err != nil {
+		t.Fatalf("unexpected error setting valid proxy: %v", err)
+	}
+
+	transport, ok := m.client.Transport.(*http.Transport)
+	if !ok || transport == nil {
+		t.Fatal("expected client.Transport to be *http.Transport")
+	}
+
+	req, err := http.NewRequest("GET", "https://g.api.mega.co.nz", nil)
+	if err != nil {
+		t.Fatalf("failed to create test request: %v", err)
+	}
+
+	if transport.Proxy == nil {
+		t.Fatal("expected transport.Proxy to be set")
+	}
+
+	proxyURL, err := transport.Proxy(req)
+	if err != nil {
+		t.Fatalf("unexpected error getting proxy url: %v", err)
+	}
+	if proxyURL == nil || proxyURL.String() != proxyStr {
+		t.Fatalf("expected proxy URL %q, got %v", proxyStr, proxyURL)
+	}
+
+	// Test invalid proxy URL
+	err = m.SetProxy("::invalid_url")
+	if err == nil {
+		t.Fatal("expected error for invalid proxy URL, got nil")
+	}
+
+	// Test clearing proxy with empty string
+	err = m.SetProxy("")
+	if err != nil {
+		t.Fatalf("unexpected error clearing proxy: %v", err)
+	}
+	if transport.Proxy != nil {
+		proxyURL, err = transport.Proxy(req)
+		if err != nil {
+			t.Fatalf("unexpected error checking cleared proxy: %v", err)
+		}
+		if proxyURL != nil {
+			t.Fatalf("expected nil proxy URL after clearing, got %v", proxyURL)
+		}
 	}
 }

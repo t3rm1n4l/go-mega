@@ -14,6 +14,7 @@ import (
 	"math/big"
 	mrand "math/rand"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -366,6 +367,26 @@ func New() *Mega {
 func (m *Mega) SetClient(client *http.Client) *Mega {
 	m.client = client
 	return m
+}
+
+// SetProxy sets a proxy URL for the HTTP client
+func (m *Mega) SetProxy(proxy string) error {
+	var proxyFunc func(*http.Request) (*url.URL, error)
+	if proxy != "" {
+		proxyURL, err := url.Parse(proxy)
+		if err != nil {
+			return err
+		}
+		proxyFunc = http.ProxyURL(proxyURL)
+	}
+
+	transport, ok := m.client.Transport.(*http.Transport)
+	if !ok || transport == nil {
+		transport = &http.Transport{}
+	}
+	transport.Proxy = proxyFunc
+	m.client.Transport = transport
+	return nil
 }
 
 // discardLogf discards the log messages
